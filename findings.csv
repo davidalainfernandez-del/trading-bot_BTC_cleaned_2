@@ -1,0 +1,27 @@
+file,issue,detail
+trading-bot_BTC_cleaned 2/backend/adaptive_risk_manager.py,undefined_names,"N, e, f, lcost, lpx, lqty, lts, r, rt, tp, x"
+trading-bot_BTC_cleaned 2/backend/analyze_trades_offline.py,undefined_names,"e, lot_price, lot_qty, q, r, tr"
+trading-bot_BTC_cleaned 2/backend/app.cleaned.aliases.py,bare_except_count,1
+trading-bot_BTC_cleaned 2/backend/app.cleaned.aliases.py,undefined_names,"__file__, _e, _query, all_items, arg, best_dt, c_prev, col, coltype, conf, div, ex_id, fn, gains, i, indic, it, kill_switch_checks, lcost, level, lqty, outc, p0, p16, p84, p_up_patch, per_sub, q0, q_sold, size_usdt_patch, skipped, ts_out"
+trading-bot_BTC_cleaned 2/backend/app.py,undefined_names,"FEATURES, FEE_RATE_BUY, FEE_RATE_SELL, LAST_OHLC, LOT_SEQ, ORDERS_LAST_HOUR, POS_LOCK, PRICE_RING, RISK_LOCK, SLIPPAGE, STATE, SYMBOL, SYMBOLS, TICKER_CACHE, TICKER_LOCK, TRACE, WS_STOP, _AUTOTRADE_THREAD, _LAST_PRESET_BY_SYMBOL, _NEG_R, _PARAMS, _POS_R, _REDDIT_CACHE, _REDDIT_TTL, _STRAT_PRESETS, _TW_CACHE, __file__, _db, _e, _query, _sent_score, ad, all_items, alt, amount_digits, amt_digits, arg, best_dt, c_prev, col, coltype, db_query, div, ex_id, fn, gains, i, indic, it, kill_switch_checks, lcost, lot_px, lot_qty, lqty, min_amount, outc, p16, p84, p_up_patch, per_sub, qx, qy, size_usdt_patch, skipped, sl_s, suf, tp_s, ts_out, websocket"
+trading-bot_BTC_cleaned 2/backend/app_multi_append.py,undefined_names,"a, action, b, ccxt, conf, e, get_db, jsonify, k, level, line, ls, os, p0, q, q0, reason, requests, s, source, time, title, ts, url, x"
+trading-bot_BTC_cleaned 2/backend/autotrade_monitor.py,undefined_names,"coin_qty, e, k, key, lot_price, lot_qty, p, q, tr"
+trading-bot_BTC_cleaned 2/backend/autotrade_monitor_v2.1.py,undefined_names,"__file__, e, f, item, k, key, p, pnl_day_pct, pnl_day_usd"
+trading-bot_BTC_cleaned 2/backend/autotrade_monitor_v2.py,undefined_names,"__file__, e, f, item, k, key, p, pnl_day_pct, pnl_day_usd"
+trading-bot_BTC_cleaned 2/backend/collect_paper_history.py,undefined_names,"f, lcost, lpx, lqty, lts, r, row"
+trading-bot_BTC_cleaned 2/backend/evaluate_microtrades.py,undefined_names,"f, r, s, size, tp"
+trading-bot_BTC_cleaned 2/backend/make_paper_report.py,undefined_names,"b, e, f, min_sl_curr, min_tp_curr, pdf, r, s"
+trading-bot_BTC_cleaned 2/backend/ml_multiclass.py,undefined_names,"c, e, i, j, k, r"
+trading-bot_BTC_cleaned 2/backend/multiasset_addon/migrate_snapshots_multi.py,undefined_names,"__file__, px, ts"
+trading-bot_BTC_cleaned 2/backend/multiasset_addon/migrate_trades_multi.py,undefined_names,"__file__, fee, maker, order_type, price, qty, side, slippage, ts"
+trading-bot_BTC_cleaned 2/backend/optimize_sl_from_history.py,undefined_names,"f, r"
+trading-bot_BTC_cleaned 2/backend/optimize_tp_from_history.py,undefined_names,"f, r, s, tp"
+trading-bot_BTC_cleaned 2/backend/plot_loss_distribution.py,undefined_names,"f, r"
+trading-bot_BTC_cleaned 2/backend/plot_tp_combo.py,undefined_names,"f, r, s, size, tp"
+trading-bot_BTC_cleaned 2/backend/plot_tp_curve.py,undefined_names,"f, r, s, size, tp"
+trading-bot_BTC_cleaned 2/backend/rolling_summary.py,undefined_names,"N, f, lcost, lpx, lqty, lts, r, row, rt, tp, x"
+trading-bot_BTC_cleaned 2/backend/secretize_compose.py,undefined_names,"c, env_dict, f, item, line, p, svc, svc_name, was_list"
+trading-bot_BTC_cleaned 2/backend/sentiment_sources.py,undefined_names,"ch, e, it, m, p, sub, t, x"
+trading-bot_BTC_cleaned 2/backend/smart_entry.py,undefined_names,r
+trading-bot_BTC_cleaned 2/backend/smart_entry_rt.py,undefined_names,r
+trading-bot_BTC_cleaned 2/backend/vieuxapp.py,undefined_names,"__file__, ad, f, i, idx, it, k, ok, p, pos_map, rel, sl_s, source, sub, tp_s, y"

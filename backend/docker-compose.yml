@@ -1,0 +1,78 @@
+services:
+  app:
+    build: .
+    image: trading-bot-backend:testnet
+    working_dir: /app
+
+    command:
+      - sh
+      - -lc
+      - |
+        mkdir -p /tmp/metrics
+        rm -rf /tmp/metrics/* 2>/dev/null || true
+        exec gunicorn -w 2 -k gthread --threads 8 --timeout 60 --graceful-timeout 30 \
+          --keep-alive 5 --log-level info --access-logfile - --error-logfile - \
+          --bind 0.0.0.0:5000 app:app
+
+    ports:
+      - "5000:5000"
+
+    # charge TOUT depuis .env d'abord
+    env_file:
+      - ./.env
+
+    # ce bloc PREND LE DESSUS sur .env
+    environment:
+      AUTO_TRADE_ENABLED: "1"
+      EXECUTION_MODE: "paper"   # mettre "ccxt" quand tu repasses en réel
+      BINANCE_TESTNET: "1"
+
+      UI_SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT"
+      TRADE_SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT"
+
+      SMA_SHORT: "50"
+      SMA_LONG: "200"
+      SMA_TRIGGER_BPS: "10"
+
+      AUTO_TRADE_INTERVAL_S: "30"
+      COOLDOWN_SEC: "120"
+      BUY_USDT_PER_TRADE: "25"
+
+      TZ: "Europe/Zurich"
+      SELF_BASE_URL: "http://127.0.0.1:5000"
+
+      PROMETHEUS_MULTIPROC_DIR: "/tmp/metrics"
+      FLASK_ENV: "production"
+      FLASK_DEBUG: "0"
+
+      APP_ENV: "testnet"
+      APP_VERSION: "0.1.0"
+      GIT_SHA: "abc1234"
+      PYTHONUNBUFFERED: "1"
+
+      DB_PATH: "/app/data/app.db"
+      EXPORT_DIR: "/app/data/exports"
+      START_CASH: "200"
+
+      # ==== RSS (quote tout pour éviter les surprises YAML) ====
+      ENABLE_RSS: "1"
+      RSS_TTL: "600"
+      RSS_FEEDS: "https://www.coindesk.com/arc/outboundfeeds/rss/,https://cointelegraph.com/rss,https://decrypt.co/feed,https://bitcoinmagazine.com/.rss,https://www.newsbtc.com/feed/"
+
+    volumes:
+      - .:/app
+      - ./data:/app/data
+      - metrics:/tmp/metrics
+
+    # évite l'antislash qui casse la commande; garde tout sur une seule ligne
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys,socket; socket.setdefaulttimeout(3); sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5000/api/health').getcode()==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    restart: unless-stopped
+
+volumes:
+  metrics: {}

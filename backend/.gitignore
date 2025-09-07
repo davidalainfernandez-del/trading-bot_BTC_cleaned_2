@@ -1,0 +1,35 @@
+# === OS ===
+.DS_Store
+__MACOSX/
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtualenv
+.venv/
+env/
+venv/
+
+# === Configs / secrets ===
+.env
+.env.*
+
+# === Logs / cache ===
+logs/
+*.log
+*.tmp
+*.swp
+.cache/
+*.sqlite3
+
+# === Models & large files ===
+*.h5
+*.pkl
+*.joblib
+*.npy
+*.npz
+dump/
+data/

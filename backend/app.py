@@ -1,0 +1,12609 @@
+# --- Consolidated imports (auto-generated) ---
+from __future__ import annotations
+import os, time, json, sqlite3, math, random, threading, re
+import statistics as _stats
+from datetime import datetime, timezone
+from collections import deque, defaultdict
+from typing import Dict, Any, List, Tuple, Optional, Union
+from pathlib import Path
+from prometheus_client import (
+    Counter,
+    Histogram,
+    Gauge,
+    generate_latest,
+    CONTENT_TYPE_LATEST,
+    CollectorRegistry,
+    Info,
+)
+from prometheus_client import multiprocess as prom_multiproc
+from flask import Flask, Response, abort, jsonify, render_template, request, send_file
+from common.logging import setup_logging
+from common.validators import validate_symbol, validate_qty
+from common.config import START_TIME, APP_VERSION, GIT_SHA
+import requests
+from common.http import HTTP as _HTTP
+from dotenv import load_dotenv
+from flask import request, jsonify
+import hashlib, time
+from urllib.parse import urlparse
+import feedparser, time
+import threading
+import calendar, datetime as _dt
+from typing import Optional
+import sqlite3
+import json
+from datetime import datetime, timezone
+import time
+from collections import defaultdict
+import os, math, time
+from datetime import datetime, timezone, date
+from dotenv import load_dotenv
+from flask import Flask, jsonify, render_template, request, abort
+from sentiment_sources import get_sentiment_features, ingest_twitter_texts
+from tri_patch import apply_trade_patch, train_mc_once
+from typing import Any, Dict, List, Optional, Iterable, Union
+import json, math
+import logging
+import os, re, json, time, math, random, sqlite3, statistics, threading
+import sqlite3
+import threading
+from sentiment_sources import ingest_twitter_texts
+import os
+import numpy as _np
+import json
+import itertools
+import traceback
+try:
+    import ccxt
+except Exception:
+    ccxt = None
+
+try:
+    from pytrends.request import TrendReq
+except Exception:
+    TrendReq = None
+
+# --- End consolidated imports ---
+
+
+# [MOVED IMPORT] from __future__ import annotations
+
+# --- Imports stdlib
+# [MOVED IMPORT] import os, time, json, sqlite3, math, random, threading, re
+# [MOVED IMPORT] import statistics as _stats
+# [MOVED IMPORT] from datetime import datetime, timezone
+# [MOVED IMPORT] from collections import deque, defaultdict
+# [MOVED IMPORT] from typing import Dict, Any, List, Tuple, Optional, Union
+# [MOVED IMPORT] from pathlib import Path
+# [MOVED IMPORT] from prometheus_client import (
+# [MOVED IMPORT]     Counter,
+# [MOVED IMPORT]     Histogram,
+# [MOVED IMPORT]     Gauge,
+# [MOVED IMPORT]     generate_latest,
+# [MOVED IMPORT]     CONTENT_TYPE_LATEST,
+# [MOVED IMPORT]     CollectorRegistry,
+# [MOVED IMPORT]     Info,
+# [MOVED IMPORT] )
+# [MOVED IMPORT] from prometheus_client import multiprocess as prom_multiproc
+
+
+# --- 3rd-party
+# [MOVED IMPORT] from flask import Flask, Response, abort, jsonify, render_template, request, send_file
+# [MOVED IMPORT] from common.logging import setup_logging
+# [MOVED IMPORT] from common.validators import validate_symbol, validate_qty
+# [MOVED IMPORT] from common.config import START_TIME, APP_VERSION, GIT_SHA
+
+APP_ENV = os.getenv("APP_ENV", "dev")
+# [MOVED IMPORT] import requests
+# [MOVED IMPORT] from common.http import HTTP as _HTTP
+
+# .env d’abord
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+    pass
+# -- Imports optionnels -------------------------------------------------------
+# [MOVED TRY-IMPORT] try:
+# [MOVED TRY-IMPORT]     import ccxt  # requis uniquement en mode 'ccxt'
+# [MOVED TRY-IMPORT] except ImportError:
+# [MOVED TRY-IMPORT]     ccxt = None  # évite NameError et permet un test "ccxt is not None"
+
+# Créer l'app AVANT d'utiliser app
+app = Flask(__name__)
+logger = app.logger
+LOGGER = setup_logging()
+
+# ---- Prometheus metrics ----
+REQUEST_LATENCY = Histogram(
+    "http_request_duration_seconds",
+    "HTTP request latency (seconds)",
+    ["method", "endpoint", "status"],
+    buckets=(0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10),
+)
+REQUEST_COUNT = Counter(
+    "http_requests_total", "Total HTTP requests", ["method", "endpoint", "status"]
+)
+ERROR_COUNT = Counter("app_errors_total", "Total application errors", ["type"])
+TRADES_TOTAL = Counter("trades_total", "Total trades recorded", ["side"])
+
+# --- _validate_common CORRIGÉ ---
+# [MOVED IMPORT] from flask import request, jsonify
+
+# [MOVED IMPORT] from flask import request, jsonify
+
+
+@app.before_request
+def _validate_common():
+    try:
+        # --- SYMBOL ---
+        sym = None
+        if request.method == "GET":
+            sym = request.args.get("symbol")
+        else:
+            # POST/PUT/DELETE: on regarde JSON puis form puis query
+            data = request.get_json(silent=True) or {}
+            sym = (
+                data.get("symbol")
+                or request.form.get("symbol")
+                or request.args.get("symbol")
+            )
+
+        if sym:
+            err = validate_symbol(sym)
+            if err:
+                return jsonify(error=err), 400
+
+        # --- QTY ---
+        qty = None
+        data = request.get_json(silent=True) or {}
+        if "qty" in data:
+            qty = data.get("qty")
+        if qty is None:
+            qty = request.form.get("qty") or request.args.get("qty")
+
+        if qty is not None:
+            err = validate_qty(qty)
+            if err:
+                return jsonify(error=err), 400
+
+    except Exception:
+        # ne jamais bloquer une requête à cause du validateur
+        pass
+
+
+# -----------------------------------------------------------------------------
+# Config / helpers
+# -----------------------------------------------------------------------------
+# --- RSS config ---
+# [MOVED IMPORT] import hashlib, time
+# [MOVED IMPORT] from urllib.parse import urlparse
+# [MOVED TRY-IMPORT] try:
+# [MOVED TRY-IMPORT]     import feedparser
+# [MOVED TRY-IMPORT] except Exception:
+# [MOVED TRY-IMPORT]     feedparser = None  # au cas où, on loguera plus bas
+
+ENABLE_RSS = os.getenv("ENABLE_RSS", "0") in ("1", "true", "yes", "True")
+RSS_TTL    = int(os.getenv("RSS_TTL", "600"))
+RSS_FEEDS  = [u.strip() for u in os.getenv("RSS_FEEDS", "").split(",") if u.strip()]
+
+
+
+
+
+# [MOVED IMPORT] import feedparser, time
+def fetch_rss(urls, per_feed=20):
+    out=[]
+    for url in urls:
+        d=feedparser.parse(url)
+        src = d.feed.get("title", url)
+        for e in d.entries[:per_feed]:
+            ts = None
+            for k in ("published_parsed","updated_parsed"):
+                if getattr(e, k, None):
+                    ts = int(time.mktime(getattr(e,k)))
+                    break
+            out.append({
+                "ts": ts,
+                "title": e.get("title"),
+                "url": e.get("link"),
+                "source": src,
+            })
+    return out
+
+
+registry = CollectorRegistry()
+_mp_dir = os.getenv("PROMETHEUS_MULTIPROC_DIR")
+if _mp_dir:
+    os.makedirs(_mp_dir, exist_ok=True)
+    prom_multiproc.MultiProcessCollector(registry)
+
+# /metrics (un seul endpoint)
+
+
+@app.get("/metrics")
+def metrics():
+    """metrics: endpoint auto-documenté.
+    
+    Routes:
+    - GET /metrics
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/metrics"
+    """
+    if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+        registry = CollectorRegistry()
+        prom_multiproc.MultiProcessCollector(registry)
+        data = generate_latest(registry)
+        return Response(data, mimetype=CONTENT_TYPE_LATEST)
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
+
+
+# métrique Info (utilise le même registry)
+try:
+    _build_info = Info(
+        "backend_build_info", "Build and environment info", registry=registry
+    )
+    _build_info.info(
+        {
+            "version": APP_VERSION,
+            "env": APP_ENV,
+            "git_sha": GIT_SHA,
+        }
+    )
+except ValueError:
+    pass
+
+# exemple de metric Info (toujours passer registry=registry)
+app_info = Info("app_build", "Build info", registry=registry)
+app_info.info(
+    {
+        "env": os.getenv("APP_ENV", "dev"),
+        "version": os.getenv("APP_VERSION", "dev"),
+        "git_sha": os.getenv("GIT_SHA", "dev"),
+    }
+)
+
+
+# ---------- Lancement des threads de fond (AutoTrader) ----------
+# [MOVED IMPORT] import threading
+
+LOG_BUFFER = deque(maxlen=1000)  # si pas déjà
+_AUTOTRADE_STATE = {"paused": True, "per_symbol": {}}  # si pas déjà
+_start_lock = threading.Lock()
+_bg_started = False
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return bool(default)
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
+def env_str(name: str, default: str = "") -> str:
+    v = os.getenv(name, default)
+    if v is None:
+        return default
+    v = v.strip()
+    if (v.startswith('"') and v.endswith('"')) or (
+        v.startswith("'") and v.endswith("'")
+    ):
+        v = v[1:-1]
+    return v
+
+
+# --- démarrage AutoTrader (one-shot) ---
+_AUTOTRADER = None
+_BG_STARTED = False
+
+
+def _start_autotrader_once():
+    global _AUTOTRADER
+    if _AUTOTRADER is not None:
+        return
+    if str(os.getenv("AUTO_TRADE_ENABLED", "0")).lower() in ("1", "true", "yes", "on"):
+        symbols = SYMBOLS_DEFAULT
+        _AUTOTRADER = AutoTrader(symbols)
+        _AUTOTRADER.start()
+        LOG_BUFFER.append("[AUTOTRADE] thread started")
+    else:
+        LOG_BUFFER.append("[AUTOTRADE] disabled by env (AUTO_TRADE_ENABLED=0)")
+
+
+def start_background_loops_once():
+    global _BG_STARTED
+    with _start_lock:
+        if _BG_STARTED:
+            return
+        _start_autotrader_once()
+        _BG_STARTED = True
+
+
+# -- juste après ensure_schema() et la définition de start_background_loops_once() --
+
+try:
+    ensure_schema()
+except Exception as e:
+    LOG_BUFFER.append(f"[db-init-error] {e}")
+
+# Auto-start du thread à l'import du module (idempotent)
+if str(os.getenv("AUTO_TRADE_ENABLED", "1")).strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+):
+    try:
+        start_background_loops_once()
+        LOG_BUFFER.append("[bg] start_background_loops_once() called at import")
+    except Exception as e:
+        LOG_BUFFER.append(f"[bg-start-at-import-error] {e}")
+else:
+    LOG_BUFFER.append("[bg] AUTO_TRADE_ENABLED=0 -> autostart skipped")
+
+
+# --- utils numériques sûrs (à mettre en haut du fichier, près des helpers)
+def _sane_float(x, default=0.0):
+    try:
+        x = float(x)
+    except Exception:
+        return float(default)
+    return x if math.isfinite(x) else float(default)
+
+
+@app.before_request
+def _ensure_bg_started():
+    try:
+        start_background_loops_once()
+    except Exception as e:
+        LOG_BUFFER.append(f"[bg-start-error] {e}")
+
+
+def _age_s(ts: Optional[Union[int, float, str]]) -> Optional[float]:
+    """Retourne l'âge en secondes (float) d'un timestamp en ms ou s. None si invalide."""
+    if ts is None:
+        return None
+    try:
+        t = float(ts)
+        if not math.isfinite(t):
+            return None
+        # Heuristique: > 1e12 => millisecondes, > 1e9 => secondes (OK)
+        if t > 1e12:
+            t /= 1000.0
+        age = time.time() - t
+        return max(0.0, float(age))
+    except Exception:
+        return None
+
+
+@app.get("/api/health")
+def api_health():
+    """api_health: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/health
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/health"
+    """
+    return jsonify({"ok": True, "ts": int(time.time() * 1000)})
+
+@app.route("/api/admin/refresh_news", methods=["POST"])
+def api_admin_refresh_news():
+    """api_admin_refresh_news: endpoint auto-documenté.
+    
+    Routes:
+    - POST /api/admin/refresh_news
+    
+    Exemples:
+    - curl -X POST "http://localhost:5000/api/admin/refresh_news" -H "Content-Type: application/json" -d '{}'
+    """
+    src = (request.args.get("src") or "rss").lower()
+    if src != "rss":
+        return jsonify({"ok": False, "msg": f"unsupported src={src}"}), 400
+    n = _rss_fetch_once()
+    return jsonify({"ok": True, "src": src, "inserted": n})
+
+def _resolve_sentiment_source(src: str):
+    # ancien
+    # if src == "nw": return ["newsapi"]
+    # nouveau (nw = news “globale”, inclut newsapi ET rss)
+    if src == "nw":
+        return ["newsapi", "rss"]
+    # rd, tw, tr inchangés…
+
+
+# --- route liveness (UNE SEULE) ---
+@app.route("/api/health/deep")
+def api_health_deep():
+    """api_health_deep: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/health/deep
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/health/deep"
+    """
+    try:
+        now_ms = int(time.time() * 1000)
+        out = {"ts": now_ms}
+
+        # DB
+        try:
+            conn = get_db()
+            conn.execute("SELECT 1")
+            conn.close()
+            out["db_ok"] = True
+        except Exception as e:
+            out["db_ok"] = False
+            out["db_err"] = str(e)
+
+        # Prix BTC
+        try:
+            raw = http_last_price("BTCUSDT")
+            px = float(raw) if raw is not None else None
+            if px is None or not math.isfinite(px) or px <= 0:
+                out["btc_last"] = None
+                if raw is not None:
+                    out["price_err"] = f"invalid price: {raw}"
+            else:
+                out["btc_last"] = px
+        except Exception as e:
+            out["btc_last"] = None
+            out["price_err"] = str(e)
+
+        # -------- Autotrade (⚠️ hors du except ci-dessus) --------
+        at = globals().get("_AUTOTRADE_STATE") or {}
+        lt = at.get("last_tick_ts")
+
+        paused_kv = kv_get_bool("AUTO_TRADE_PAUSED", bool(at.get("paused", False)))
+        start_ts = at.get("start_ts")
+        running_for = None
+        if isinstance(start_ts, (int, float)) and start_ts > 0:
+            running_for = max(0.0, time.time() - (start_ts / 1000.0))
+
+        out["autotrade"] = {
+            "paused": bool(paused_kv),
+            "status": "paused" if paused_kv else "running",
+            "last_tick_ts": lt,
+            "last_tick_age_s": _age_s(lt),
+            "running_for": running_for,
+        }
+
+        ok = (out.get("db_ok") is True) and (out.get("btc_last") is not None)
+        out["ok"] = ok
+        return jsonify(out), (200 if ok else 503)
+
+    except Exception as e:
+        # Toujours JSON, jamais HTML
+        return (
+            jsonify({"ok": False, "error": str(e), "ts": int(time.time() * 1000)}),
+            503,
+        )
+
+
+# ----------------------------- Config ----------------------------------------
+DATA_DIR = os.getenv(
+    "DATA_DIR", str((Path(__file__).resolve().parent / "data").as_posix())
+)
+DB_PATH = os.getenv("DB_PATH", os.path.join(DATA_DIR, "app.db"))
+
+
+APP_VERSION = os.getenv("APP_VERSION", "0.0.0")
+APP_ENV = os.getenv("APP_ENV", "testnet")
+GIT_SHA = os.getenv("GIT_SHA", "dev")
+
+
+SYMBOLS_DEFAULT = (
+    os.getenv("TRADE_SYMBOLS")
+    or "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,PEPEUSDT,DOGEUSDT,LINKUSDT,XRPUSDT,ADAUSDT,AVAXUSDT"
+).split(",")
+SYMBOLS_DEFAULT = [s.strip().upper() for s in SYMBOLS_DEFAULT if s.strip()]
+
+EXECUTION_MODE = (os.getenv("EXECUTION_MODE") or "paper").lower()  # "ccxt" ou "paper"
+BINANCE_TESTNET = env_bool("BINANCE_TESTNET", False)
+
+USDT_PER_TRADE = float(os.getenv("USDT_PER_TRADE", "25"))
+COOLDOWN_SEC = int(os.getenv("COOLDOWN_SEC", "60"))
+SMA_SHORT = int(os.getenv("SMA_SHORT", "50"))
+SMA_LONG = int(os.getenv("SMA_LONG", "200"))
+SMA_TRIGGER_BPS = float(os.getenv("SMA_TRIGGER_BPS", "5"))  # 5 bps = 0.05%
+
+# caches simples
+_PRICE_CACHE: Dict[str, Tuple[float, float]] = {}
+_OHLC_CACHE: Dict[Tuple[str, str, int], Tuple[List[dict], float]] = {}
+_CACHE_LOCK = threading.Lock()
+
+
+def _tz():
+    tzname = os.getenv("TZ", "Europe/Zurich")
+    try:
+        return ZoneInfo(tzname) if ZoneInfo else timezone.utc
+    except Exception:
+        return timezone.utc
+
+
+def _day_start_ms():
+    now_utc = datetime.now(timezone.utc)
+    loc = now_utc.astimezone(_tz())
+    start = datetime(loc.year, loc.month, loc.day, tzinfo=_tz())
+    return int(start.timestamp() * 1000)
+
+
+def _kv_set(key, val):
+    try:
+        kv_set(key, val)
+    except Exception:
+        pass
+
+
+def _table_cols(conn, table):
+    try:
+        c = conn.cursor()
+        rows = c.execute(f"PRAGMA table_info({table})").fetchall()
+        return {(r["name"] if isinstance(r, dict) else r[1]) for r in rows}
+    except Exception:
+        return set()
+
+
+def _portfolio_net_now():
+    # On réutilise ton endpoint existant côté serveur
+    try:
+        res = api_portfolio_summary()
+        js = res.get_json() if hasattr(res, "get_json") else None
+        return float((js or {}).get("net_value_usdt") or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _ensure_nav_snap_table():
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute(
+            """
+        CREATE TABLE IF NOT EXISTS nav_snap (
+            ts INTEGER PRIMARY KEY,
+            net REAL
+        )
+        """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _snap_nav(ts_ms: int, net: float):
+    try:
+        _ensure_nav_snap_table()
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "INSERT OR REPLACE INTO nav_snap(ts, net) VALUES(?,?)",
+            (int(ts_ms), float(net)),
+        )
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _dd_max_today():
+    """Max drawdown intraday sur base des snapshots nav_snap d'aujourd'hui."""
+    since = _day_start_ms()
+    try:
+        _ensure_nav_snap_table()
+        conn = get_db()
+        c = conn.cursor()
+        rows = c.execute(
+            "SELECT ts, net FROM nav_snap WHERE ts >= ? ORDER BY ts ASC", (since,)
+        ).fetchall()
+    except Exception:
+        rows = []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    peak = None
+    dd_min = 0.0
+    for r in rows:
+        v = float((r["net"] if isinstance(r, dict) else r[1]) or 0.0)
+        if v <= 0:
+            continue
+        peak = v if (peak is None or v > peak) else peak
+        if peak and peak > 0:
+            dd = (v / peak) - 1.0  # <= 0
+            if dd < dd_min:
+                dd_min = dd
+    return abs(dd_min)  # positif
+
+
+def _trades_today():
+    """Trades du jour + realized PnL approximatif (FIFO) si prix dispo."""
+    conn = get_db()
+    try:
+        cols = _table_cols(conn, "trades")
+        c = conn.cursor()
+
+        # Colonne temps
+        tcol = next(
+            (
+                x
+                for x in (
+                    "ts",
+                    "time_ms",
+                    "t",
+                    "timestamp",
+                    "created_at_ms",
+                    "created_at",
+                )
+                if x in cols
+            ),
+            None,
+        )
+        # Colonne prix
+        pcol = next(
+            (x for x in ("price", "p", "avg_price", "fill_price") if x in cols), None
+        )
+
+        since = _day_start_ms()
+        if tcol:
+            sql = f"SELECT symbol, side, qty{(','+pcol) if pcol else ''}, {tcol} as ts FROM trades WHERE {tcol} >= ? ORDER BY {tcol} ASC"
+            rows = c.execute(sql, (since,)).fetchall()
+        else:
+            # fallback: on prend tout (moins précis)
+            sql = f"SELECT symbol, side, qty{(','+pcol) if pcol else ''} FROM trades"
+            rows = c.execute(sql).fetchall()
+
+        trades = []
+        for r in rows:
+            rd = dict(r) if isinstance(r, dict) else {}
+            if not rd:
+                # sqlite row tuple fallback
+                # symbol, side, qty, maybe price, maybe ts...
+                tup = r
+                rd = {"symbol": tup[0], "side": tup[1], "qty": tup[2]}
+                if pcol:
+                    rd["price"] = tup[3]
+                if tcol:
+                    rd["ts"] = tup[4 if pcol else 3]
+            trades.append(rd)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    total = len(trades)
+    buys = sum(1 for r in trades if (r.get("side", "").lower() == "buy"))
+    sells = sum(1 for r in trades if (r.get("side", "").lower() == "sell"))
+
+    # Realized PnL / Hit rate (FIFO) seulement si prix dispo
+    realized = None
+    hit_rate = None
+    avg_per_trade = None
+    if any(
+        ("price" in r) or ("p" in r) or ("avg_price" in r) or ("fill_price" in r)
+        for r in trades
+    ):
+        # normalise cle prix
+        def _price_of(r):
+            for k in ("price", "p", "avg_price", "fill_price"):
+                if k in r and r[k] is not None:
+                    try:
+                        return float(r[k])
+                    except Exception:
+                        pass
+            return None
+
+        inv = {}  # symbol -> list of [qty, price] (FIFO buys)
+        realized_pnl = 0.0
+        wins = 0
+        losses = 0
+        fills = 0
+
+        for r in trades:
+            sym = _symbol_norm(r.get("symbol") or "")
+            side = (r.get("side") or "").lower()
+            qty = float(r.get("qty") or 0.0)
+            px = _price_of(r)
+            if not sym or px is None or qty <= 0:
+                continue
+
+            if side == "buy":
+                inv.setdefault(sym, []).append([qty, px])
+            elif side == "sell":
+                need = qty
+                while need > 1e-18 and inv.get(sym):
+                    lot_qty, lot_px = inv[sym][0]
+                    take = min(need, lot_qty)
+                    pnl = (px - lot_px) * take
+                    realized_pnl += pnl
+                    wins += 1 if pnl > 0 else 0
+                    losses += 1 if pnl <= 0 else 0
+                    fills += 1
+                    lot_qty -= take
+                    need -= take
+                    if lot_qty <= 1e-18:
+                        inv[sym].pop(0)
+                    else:
+                        inv[sym][0][0] = lot_qty
+
+        realized = realized_pnl
+        if fills > 0:
+            hit_rate = wins / max(1, (wins + losses))
+            avg_per_trade = realized_pnl / fills
+
+    return {
+        "total": total,
+        "buys": buys,
+        "sells": sells,
+        "realized_pnl_usd": realized,  # peut être None si prix inconnus
+        "avg_profit_per_fill_usd": avg_per_trade,
+        "hit_rate": hit_rate,  # 0..1 ou None
+    }
+
+
+@app.get("/api/perf/day")
+def api_perf_day():
+    """api_perf_day: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/perf/day
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/perf/day"
+    """
+    tzname = os.getenv("TZ", "Europe/Zurich")
+    day_ms = _day_start_ms()
+    day_key = datetime.now(timezone.utc).astimezone(_tz()).strftime("%Y-%m-%d")
+
+    net_now = _portfolio_net_now()
+
+    # Base du jour: auto au premier appel
+    base_key = f"NAV_BASE:{day_key}"
+    base_str = _kv_get(base_key, None)
+    base_set_now = False
+    if base_str is None:
+        _kv_set(base_key, f"{net_now:.8f}")
+        base_set_now = True
+        base_val = net_now
+    else:
+        try:
+            base_val = float(base_str)
+        except Exception:
+            base_val = net_now
+
+    pnl_day = net_now - base_val
+    pnl_pct = (pnl_day / base_val) if base_val else 0.0
+
+    # Snap NAV pour DD (chaque hit fait un point; OK pour une page qui rafraîchit)
+    _snap_nav(int(time.time() * 1000), net_now)
+    dd_max = _dd_max_today()
+
+    trades = _trades_today()
+
+    # Profit moyen par trade (approche “net change / total trades du jour”)
+    avg_net_per_trade = (pnl_day / trades["total"]) if trades["total"] > 0 else None
+
+    return jsonify(
+        {
+            "ok": True,
+            "tz": tzname,
+            "day_start_ms": day_ms,
+            "base_set_now": base_set_now,
+            "net_now": net_now,
+            "net_base": base_val,
+            "pnl_day_usd": pnl_day,
+            "pnl_day_pct": pnl_pct,
+            "dd_max_pct": dd_max,
+            "trades_today": trades,
+            "avg_profit_per_trade_net_usd": avg_net_per_trade,
+        }
+    )
+
+
+@app.post("/api/admin/start_autotrader")
+def api_admin_start_autotrader():
+    """api_admin_start_autotrader: endpoint auto-documenté.
+    
+    Routes:
+    - POST /api/admin/start_autotrader
+    
+    Exemples:
+    - curl -X POST "http://localhost:5000/api/admin/start_autotrader" -H "Content-Type: application/json" -d '{}'
+    """
+    try:
+        start_background_loops_once()
+        ok = _AUTOTRADER is not None
+        return jsonify({"ok": ok, "started": ok}), (200 if ok else 500)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.post("/api/perf/reset_base")
+def api_perf_reset_base():
+    """api_perf_reset_base: endpoint auto-documenté.
+    
+    Routes:
+    - POST /api/perf/reset_base
+    
+    Exemples:
+    - curl -X POST "http://localhost:5000/api/perf/reset_base" -H "Content-Type: application/json" -d '{}'
+    """
+    tzname = os.getenv("TZ", "Europe/Zurich")
+    day_key = datetime.now(timezone.utc).astimezone(_tz()).strftime("%Y-%m-%d")
+    net_now = _portfolio_net_now()
+    _kv_set(f"NAV_BASE:{day_key}", f"{net_now:.8f}")
+    return jsonify({"ok": True, "reset_to": net_now, "tz": tzname})
+
+
+# ====== /PERF DASH ======
+
+
+def _base_from_symbol(sym: str) -> str:
+    s = _symbol_norm(sym)
+    # enlève suffixes courants
+    for suf in ("USDT", "USD", "PERP"):
+        if s.endswith(suf):
+            s = s[: -len(suf)]
+    return s
+
+
+@app.post("/api/admin/news_once")
+def api_admin_news_once():
+    """
+    Fetch rapide des news pour UN symbole via CryptoPanic (fallback NewsAPI) et insertion 'nw' dans senti_points.
+    JSON: { "symbol":"BTCUSDT", "page_size": 20 }
+    """
+    j = request.get_json(silent=True) or {}
+    symbol = _symbol_norm(j.get("symbol") or "BTCUSDT")
+    base = _base_from_symbol(symbol)
+    page_size = int(j.get("page_size") or 20)
+
+    inserted = 0
+    rows = []
+
+    # 1) CryptoPanic
+    ctoken = env_str("CRYPTOPANIC_TOKEN")
+    if ctoken:
+        try:
+            # CryptoPanic: param 'auth_token' accepté; certains comptes utilisent 'token'
+            url = f"https://cryptopanic.com/api/v1/posts/?auth_token={ctoken}&currencies={base}&kind=news&filter=hot"
+            r = _HTTP.get(url, timeout=10)
+            if r.ok:
+                res = (r.json().get("results") or [])[:page_size]
+                for it in res:
+                    title = (it.get("title") or "").strip()
+                    url = (it.get("url") or "").strip()
+                    published = it.get("published_at") or it.get("created_at") or ""
+                    if not title:
+                        continue
+                    try:
+                        ts = int(
+                            datetime.fromisoformat(
+                                published.replace("Z", "+00:00")
+                            ).timestamp()
+                            * 1000
+                        )
+                    except Exception:
+                        ts = int(time.time() * 1000)
+                    score = float(tiny_polarity(f"{title} {url}"))
+                    rows.append(("nw", symbol, ts, score))
+        except Exception as e:
+            LOG_BUFFER.append(f"[NewsOnce] CryptoPanic err: {e}")
+
+    # 2) Fallback NewsAPI si rien
+    if not rows:
+        key = env_str("NEWSAPI_KEY")
+        if key:
+            try:
+                q = " OR ".join(SYM_KEYWORDS.get(symbol, [base]))
+                r = _HTTP.get(
+                    "https://newsapi.org/v2/everything",
+                    params={
+                        "q": q,
+                        "pageSize": page_size,
+                        "sortBy": "publishedAt",
+                        "language": "en",
+                        "apiKey": key,
+                    },
+                    timeout=10,
+                )
+                if r.ok:
+                    arts = r.json().get("articles") or []
+                    for a in arts:
+                        title = (a.get("title") or "").strip()
+                        url = (a.get("url") or "").strip()
+                        published = a.get("publishedAt") or ""
+                        if not title:
+                            continue
+                        try:
+                            ts = int(
+                                datetime.fromisoformat(
+                                    published.replace("Z", "+00:00")
+                                ).timestamp()
+                                * 1000
+                            )
+                        except Exception:
+                            ts = int(time.time() * 1000)
+                        score = float(tiny_polarity(f"{title} {url}"))
+                        rows.append(("nw", symbol, ts, score))
+            except Exception as e:
+                LOG_BUFFER.append(f"[NewsOnce] NewsAPI err: {e}")
+
+    if rows:
+        _db_exec_many(
+            rows, "INSERT INTO senti_points(source,symbol,ts,value) VALUES(?,?,?,?)"
+        )
+        inserted = len(rows)
+
+    return jsonify({"ok": True, "symbol": symbol, "inserted": inserted})
+
+def _rss_norm_entry(feed_url: str, feed_title: str, e: dict) -> dict:
+    link    = e.get("link") or ""
+    title   = (e.get("title") or "").strip()
+    summary = (e.get("summary") or e.get("description") or "").strip()
+    # timestamp UTC
+    ts = None
+    for k in ("published_parsed", "updated_parsed"):
+        v = e.get(k)
+        if v:
+# [MOVED IMPORT]             import calendar, datetime as _dt
+            ts = _dt.datetime.fromtimestamp(calendar.timegm(v), tz=timezone.utc)
+            break
+    if ts is None:
+        ts = datetime.now(timezone.utc)
+
+    # source lisible
+    src_name = (feed_title or urlparse(feed_url).netloc or "rss").strip()
+
+    # hash pour dédupe
+    h = hashlib.sha1((link or (title + src_name)).encode("utf-8", "ignore")).hexdigest()
+
+    return {
+        "ts": ts.isoformat(timespec="seconds"),
+        "source": f"rss:{src_name}",
+        "title": title,
+        "summary": summary,
+        "url": link,
+        "hash": h,
+        # champ "score" si ton pipeline le calcule tout de suite :
+        # "score": _sentiment_score(title + ". " + summary) if ' _sentiment_score' in globals() else None,
+    }
+
+
+def _rss_fetch_once() -> int:
+    """
+    Récupère les feeds RSS, normalise les articles, et les INSÈRE
+    via la même voie que NewsAPI pour que 'nw' les voie aussi.
+    Retourne le nombre inséré (post-dedup).
+    """
+    if not ENABLE_RSS or not RSS_FEEDS:
+        logger.info("RSS disabled or no feeds configured")
+        return 0
+    if feedparser is None:
+        logger.warning("feedparser not available; pip install feedparser")
+        return 0
+
+    all_rows = []
+    for url in RSS_FEEDS:
+        try:
+            fp = feedparser.parse(url)
+            feed_title = (getattr(fp, "feed", {}) or {}).get("title", "") if hasattr(fp, "feed") else ""
+            entries = getattr(fp, "entries", []) or []
+            for e in entries:
+                row = _rss_norm_entry(url, feed_title, e)
+                all_rows.append(row)
+        except Exception:
+            logger.exception("RSS fetch failed for %s", url)
+
+    if not all_rows:
+        return 0
+
+    # Si tu as déjà une fonction d’ingestion NewsAPI (ex: _ingest_news_rows)
+    # réutilise-la pour ECRIRE les lignes; sinon voir “fallback DB” plus bas.
+    inserted = _news_upsert_rows(all_rows, provider="rss")
+    logger.info("RSS inserted=%s rows (raw=%s)", inserted, len(all_rows))
+    return inserted
+
+def _ensure_news_table():
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS news_raw (
+            ts TEXT NOT NULL,
+            src TEXT NOT NULL,
+            symbol TEXT NULL,
+            title TEXT,
+            summary TEXT,
+            url TEXT,
+            hash TEXT UNIQUE
+        );
+        """)
+        conn.commit()
+
+def _news_upsert_rows(rows, provider="rss") -> int:
+    _ensure_news_table()
+    inserted = 0
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        for r in rows:
+            try:
+                cur.execute(
+                    """INSERT OR IGNORE INTO news_raw
+                       (ts, src, symbol, title, summary, url, hash)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (r["ts"], provider, None, r.get("title"), r.get("summary"), r.get("url"), r["hash"]),
+                )
+                if cur.rowcount > 0:
+                    inserted += 1
+            except Exception:
+                logger.exception("insert news_raw failed")
+        conn.commit()
+    return inserted
+
+def _rss_loop():
+    logger.info("RSS loop started (feeds=%d, ttl=%ss)", len(RSS_FEEDS), RSS_TTL)
+    while True:
+        try:
+            _rss_fetch_once()
+        except Exception:
+            logger.exception("RSS loop error")
+        time.sleep(max(60, RSS_TTL))  # garde un plancher 60s
+
+# Dans ton bootstrap (après création de app et avant de lancer autotrade)
+if ENABLE_RSS and RSS_FEEDS:
+    threading.Thread(target=_rss_loop, daemon=True).start()
+
+
+
+def ensure_schema():
+    conn = get_db()
+    c = conn.cursor()
+
+    # 1) pragmas (performances & journaling)
+    try:
+        c.execute("PRAGMA journal_mode=WAL;")
+        c.execute("PRAGMA synchronous=NORMAL;")
+    except Exception:
+        pass
+
+    # 2) tables (créations idempotentes)
+    c.executescript(
+        """
+    CREATE TABLE IF NOT EXISTS snapshots(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts REAL NOT NULL,
+      price REAL,
+      cash REAL,
+      position_qty REAL,
+      position_avg REAL,
+      valuation REAL,
+      realized_pnl REAL,
+      unrealized_pnl REAL,
+      btc REAL
+    );
+    CREATE TABLE IF NOT EXISTS news (
+        ts TEXT NOT NULL,               -- ISO8601 UTC
+        title TEXT,
+        url TEXT UNIQUE,                -- UNIQUE pour dédupliquer
+        source TEXT,                    -- "CoinDesk", "Cointelegraph", ...
+        provider TEXT NOT NULL,         -- "rss" | "newsapi" | "cryptopanic" ...
+        symbol TEXT                     -- optionnel (NULL si 'BTCUSDT' par défaut)
+    );
+    CREATE INDEX IF NOT EXISTS idx_news_ts ON news(ts);
+
+
+
+    CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON snapshots(ts);
+
+    CREATE TABLE IF NOT EXISTS trades(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts REAL NOT NULL,
+      symbol TEXT NOT NULL,
+      side TEXT NOT NULL,
+      price REAL NOT NULL,
+      qty REAL NOT NULL,
+      fee REAL DEFAULT 0,
+      order_type TEXT,
+      maker INTEGER DEFAULT 0,
+      slippage REAL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(ts);
+    CREATE INDEX IF NOT EXISTS idx_trades_sym ON trades(symbol);
+
+    CREATE TABLE IF NOT EXISTS examples(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts REAL NOT NULL,
+      price REAL,
+      reddit_avg REAL,
+      twitter_ema REAL,
+      sig_tech REAL,
+      atr_pct REAL,
+      ema_slope REAL,
+      hour_of_day INTEGER,
+      vol_norm REAL,
+      p_up REAL,
+      tp_pct REAL,
+      sl_pct REAL,
+      decision TEXT,
+      slippage REAL,
+      outcome TEXT,
+      ret_k REAL
+    );
+    CREATE INDEX IF NOT EXISTS idx_examples_ts ON examples(ts);
+
+    -- ⚠️ KV correcte : colonnes 'key' / 'value'
+    CREATE TABLE IF NOT EXISTS kv (
+      key   TEXT PRIMARY KEY,
+      value TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS decision_trace(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts REAL NOT NULL,
+      symbol TEXT,
+      action TEXT,
+      price REAL,
+      qty REAL,
+      score REAL,
+      reason TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_decision_trace_ts ON decision_trace(ts);
+    CREATE INDEX IF NOT EXISTS idx_decision_trace_sym ON decision_trace(symbol);
+
+    CREATE TABLE IF NOT EXISTS news(
+      symbol TEXT,
+      ts REAL,
+      title TEXT,
+      url TEXT,
+      source TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_news_ts ON news(ts);
+
+    CREATE TABLE IF NOT EXISTS logs2(
+      symbol TEXT,
+      ts REAL,
+      level TEXT,
+      line TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_logs2_ts ON logs2(ts);
+
+    CREATE TABLE IF NOT EXISTS senti_points(
+      source TEXT,         -- 'tw'|'rd'|'nw'|'tr'
+      symbol TEXT,
+      ts REAL,             -- epoch ms
+      value REAL           -- [-1..1] pour tw/rd/nw ; [0..100] pour tr
+    );
+    CREATE INDEX IF NOT EXISTS idx_senti_points ON senti_points(source, symbol, ts);
+    """
+    )
+
+    # 3) migration éventuelle kv: 'k'/'v' -> 'key'/'value'
+    try:
+        cols = [
+            row[1] for row in c.execute("PRAGMA table_info(kv)").fetchall()
+        ]  # row[1] = name
+        if set(cols) == {"k", "v"}:
+            c.execute("ALTER TABLE kv RENAME TO kv_old")
+            c.execute(
+                """
+                CREATE TABLE kv(
+                    key   TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """
+            )
+            c.execute("INSERT INTO kv(key, value) SELECT k, v FROM kv_old")
+            c.execute("DROP TABLE kv_old")
+    except Exception as e:
+        try:
+            LOG_BUFFER.append(f"[kv-migrate] {e}")
+        except Exception:
+            pass
+
+    conn.commit()
+    conn.close()
+
+
+# ------------------------------- DB ------------------------------------------
+INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(ts)",
+    "CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON snapshots(ts)",
+    "CREATE INDEX IF NOT EXISTS idx_news_ts ON news(ts)",
+)
+_INDEXES_DONE = False
+
+
+def get_db():
+    dirpath = os.path.dirname(DB_PATH)
+    if dirpath:
+        os.makedirs(dirpath, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+    except Exception:
+        pass
+    conn.row_factory = sqlite3.Row
+    global _INDEXES_DONE
+    if not _INDEXES_DONE:
+        try:
+            c = conn.cursor()
+            for sql in INDEXES:
+                try:
+                    c.execute(sql)
+                except Exception:
+                    pass
+            conn.commit()
+            _INDEXES_DONE = True
+        except Exception:
+            pass
+    return conn
+
+
+def kv_get(key, default=None):
+    # même logique que _kv_get, exposée publiquement
+    try:
+        r = _q("SELECT value AS val FROM kv WHERE key=? LIMIT 1", (key,))
+        if r and r[0].get("val") is not None:
+            v = r[0]["val"]
+            return json.loads(v) if isinstance(v, str) else v
+    except Exception:
+        pass
+    try:
+        r = _q("SELECT v AS val FROM kv WHERE k=? LIMIT 1", (key,))
+        if r and r[0].get("val") is not None:
+            v = r[0]["val"]
+            return json.loads(v) if isinstance(v, str) else v
+    except Exception:
+        pass
+    return default
+
+
+def kv_set(key, value):
+    s = json.dumps(value) if not isinstance(value, str) else value
+    try:
+        _q("INSERT OR REPLACE INTO kv(key,value) VALUES(?,?)", (key, s))
+    except Exception:
+        _q("INSERT OR REPLACE INTO kv(k,v) VALUES(?,?)", (key, s))
+
+
+
+def kv_get_bool(key: str, default: bool) -> bool:
+    v = kv_get(key)
+    if v is None:
+        return default
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _table_exists(name: str) -> bool:
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        r = c.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (name,)
+        ).fetchone()
+        conn.close()
+        return bool(r)
+    except Exception:
+        return False
+
+
+def _ts_ms(x) -> int:
+    try:
+        t = float(x or 0.0)
+    except Exception:
+        t = 0.0
+    return int(t * 1000) if t < 1e12 else int(t)
+
+
+# -------------------------- Binance HTTP (public) -----------------------------
+BINANCE_API = "https://api.binance.com"
+_INTERVALS = {
+    "1m": "1m",
+    "3m": "3m",
+    "5m": "5m",
+    "15m": "15m",
+    "30m": "30m",
+    "1h": "1h",
+    "2h": "2h",
+    "4h": "4h",
+    "6h": "6h",
+    "8h": "8h",
+    "12h": "12h",
+    "1d": "1d",
+    "3d": "3d",
+    "1w": "1w",
+    "1M": "1M",
+}
+
+
+def _symbol_norm(sym: str) -> str:
+    return (sym or "BTCUSDT").upper().replace("/", "")
+
+
+def http_last_price(symbol: str, ttl=5) -> Optional[float]:
+    symbol = _symbol_norm(symbol)
+    now = time.time()
+    with _CACHE_LOCK:
+        v = _PRICE_CACHE.get(symbol)
+        if v and v[1] > now:
+            return v[0]
+    try:
+        url = f"{BINANCE_API}/api/v3/ticker/price?symbol={symbol}"
+        r = _HTTP.get(url, timeout=5)
+        r.raise_for_status()
+        px = float(r.json()["price"])
+        with _CACHE_LOCK:
+            _PRICE_CACHE[symbol] = (px, now + ttl)
+        return px
+    except Exception:
+        return None
+
+
+def http_klines(symbol: str, interval="1m", limit=120, ttl=10) -> List[dict]:
+    symbol = _symbol_norm(symbol)
+    interval = _INTERVALS.get(interval, "1m")
+    limit = max(1, min(int(limit), 1000))
+    key = (symbol, interval, limit)
+    now = time.time()
+    with _CACHE_LOCK:
+        v = _OHLC_CACHE.get(key)
+        if v and v[1] > now:
+            return v[0]
+    try:
+        url = f"{BINANCE_API}/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+        r = _HTTP.get(url, timeout=6)
+        r.raise_for_status()
+        rows = r.json()
+        out = []
+        for k in rows:
+            out.append(
+                {
+                    "t": int(k[0]),
+                    "o": float(k[1]),
+                    "h": float(k[2]),
+                    "l": float(k[3]),
+                    "c": float(k[4]),
+                    "v": float(k[5]),
+                }
+            )
+        with _CACHE_LOCK:
+            _OHLC_CACHE[key] = (out, now + ttl)
+        return out
+    except Exception:
+        return []
+
+
+# --------------------------- ccxt (privé) -------------------------------------
+_EXCH = None
+_MARKETS = {}
+
+
+def _to_ccxt_symbol(sym: str) -> str:
+    s = _symbol_norm(sym)
+    if s.endswith("USDT"):
+        return s[:-4] + "/USDT"
+    if s.endswith("USD"):
+        return s[:-3] + "/USD"
+    return s
+
+
+def get_exchange():
+    global _EXCH, _MARKETS
+    if EXECUTION_MODE != "ccxt" or ccxt is None:
+        return None
+    if _EXCH is not None:
+        return _EXCH
+    key = env_str("BINANCE_API_KEY")
+    sec = env_str("BINANCE_API_SECRET")
+    if not key or not sec:
+        LOG_BUFFER.append(
+            "[WARN] EXECUTION_MODE=ccxt mais clés Binance absentes, fallback paper."
+        )
+        return None
+    ex = ccxt.binance(
+        {
+            "apiKey": key,
+            "secret": sec,
+            "enableRateLimit": True,
+            "options": {"defaultType": "spot"},
+        }
+    )
+    try:
+        ex.set_sandbox_mode(BINANCE_TESTNET)
+    except Exception:
+        if BINANCE_TESTNET:
+            ex.urls["api"]["public"] = "https://testnet.binance.vision/api"
+            ex.urls["api"]["private"] = "https://testnet.binance.vision/api"
+    markets = ex.load_markets()
+    _EXCH = ex
+    _MARKETS = markets
+    LOG_BUFFER.append(
+        f"[{datetime.now().isoformat(timespec='seconds')}] ccxt prêt. testnet={BINANCE_TESTNET}"
+    )
+    return _EXCH
+
+
+def _market_info(sym: str) -> Tuple[int, int, float, float]:
+    ex = get_exchange()
+    if not ex:
+        return (8, 8, 0.0, 0.0)
+    cc = _to_ccxt_symbol(sym)
+    m = _MARKETS.get(cc) or ex.market(cc)
+    p_digits = int((m.get("precision") or {}).get("price", 8))
+    a_digits = int((m.get("precision") or {}).get("amount", 8))
+    min_cost = float((((m.get("limits") or {}).get("cost") or {}).get("min")) or 0.0)
+    min_amt = float((((m.get("limits") or {}).get("amount") or {}).get("min")) or 0.0)
+    return (p_digits, a_digits, min_cost, min_amt)
+
+
+def _q_round(x: float, digits: int) -> float:
+    if digits < 0:
+        return x
+    factor = 10.0**digits
+    return math.floor(x * factor) / factor
+
+
+# --- _record_trade CORRIGÉ ---
+# [MOVED IMPORT] from typing import Optional
+# [MOVED IMPORT] import sqlite3
+# [MOVED IMPORT] import json
+# [MOVED IMPORT] from datetime import datetime, timezone
+
+
+def _record_trade(
+    symbol: str,
+    side: str,
+    price: float,
+    qty: float,
+    fee: Optional[float] = None,
+    order_type: Optional[str] = None,
+    maker: Optional[bool | int] = None,
+    expected_price: Optional[float] = None,
+) -> Tuple[bool, str, Dict[str, Any]]:
+    """
+    Enregistre un trade dans la table trades et pousse un event dans decision_trace.
+    Retourne (ok: bool, note: str, extra: dict).
+    """
+# [MOVED IMPORT]     import time
+
+    if side not in ("buy", "sell"):
+        return False, f"invalid side {side!r}", {}
+
+    # ts au format numérique (REAL) pour coller au schéma de 'trades'
+    ts_num = float(time.time())
+    # on garde aussi un ISO pour l'ancien schéma éventuel de decision_trace
+    ts_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    # slippage si expected_price fourni
+    slippage = _compute_slippage(price, expected_price) if expected_price is not None else None
+
+    # maker ⇒ int/None pour stockage en DB
+    if isinstance(maker, bool):
+        maker_i: Optional[int] = 1 if maker else 0
+    elif maker in (0, 1):
+        maker_i = int(maker)  # type: ignore[arg-type]
+    else:
+        maker_i = None
+
+    note = f"trade {side} {symbol} qty={qty} @ {price}"
+
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+
+            # 1) trades (respecte le schéma: ts REAL NOT NULL, fee/slippage numériques)
+            c.execute(
+                """
+                INSERT INTO trades (ts, symbol, side, price, qty, fee, order_type, maker, slippage)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ts_num,
+                    symbol,
+                    side,
+                    float(price),
+                    float(qty),
+                    float(fee) if fee is not None else 0.0,
+                    order_type,
+                    maker_i,
+                    float(slippage) if slippage is not None else 0.0,
+                ),
+            )
+
+            # 2) decision_trace — nouveau schéma ; n'empêche jamais le commit si ça échoue
+            try:
+                c.execute(
+                    """
+                    INSERT INTO decision_trace (ts, symbol, action, price, qty, score, reason)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        ts_num,
+                        symbol,
+                        side,                 # action
+                        float(price),
+                        float(qty),
+                        None,                 # score inconnu ici
+                        note,                 # reason lisible
+                    ),
+                )
+            except Exception:
+                # Fallback ancien schéma (type, ts, message, data)
+                try:
+                    c.execute(
+                        """
+                        INSERT INTO decision_trace (type, ts, message, data)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            "trade",
+                            ts_iso,
+                            note,
+                            json.dumps(
+                                {
+                                    "symbol": symbol,
+                                    "side": side,
+                                    "price": float(price),
+                                    "qty": float(qty),
+                                    "fee": float(fee) if fee is not None else 0.0,
+                                    "order_type": order_type,
+                                    "maker": maker_i,
+                                    "expected_price": (
+                                        float(expected_price) if expected_price is not None else None
+                                    ),
+                                    "slippage": slippage,
+                                },
+                                separators=(",", ":"),
+                            ),
+                        ),
+                    )
+                except Exception as e2:
+                    try:
+                        logger.warning(f"decision_trace insert skipped: {e2}")
+                    except Exception:
+                        pass
+
+            conn.commit()
+
+    except Exception as e:
+        try:
+            logger.exception("record_trade failed")
+        except Exception:
+            pass
+        return False, f"record_trade failed: {e}", {}
+
+    # métrique prometheus (best-effort)
+    try:
+        TRADES_TOTAL.labels(side=side).inc()
+    except Exception:
+        pass
+
+    return True, note, {"slippage": slippage}
+
+
+def place_market_buy_usdt(symbol: str, usdt: float) -> Tuple[bool, str, dict]:
+    # --- Cash guard: empêcher un cash négatif ---
+    try:
+        _, _cash = compute_positions_and_cash([])  # cash réel à partir des trades + KV
+    except Exception:
+        _cash = float(kv_get("CASH_USDT", "0") or 0)
+
+    if usdt is None or usdt <= 0:
+        return (False, "USDT must be > 0", {})
+
+    # Refuser l'achat si le cash dispo (côté app) est insuffisant
+    if _cash < usdt - 1e-9:
+        return (False, f"insufficient cash: have {_cash:.2f}, need {usdt:.2f}", {})
+
+    px = http_last_price(symbol) or 0.0
+    if px <= 0:
+        return (False, "price unavailable", {})
+
+    ex = get_exchange()
+    cc = _to_ccxt_symbol(symbol)
+
+    # Si pas d'exchange (paper), on calcule une qty "théorique" juste pour tracer
+    if ex is None:
+        # garde: respecte les min_amt / min_notional locaux si dispo
+        (_, ad, min_cost, min_amt) = _market_info(symbol)
+        qty = _q_round(usdt / px, ad)
+        if min_amt and qty < min_amt:
+            qty = min_amt
+        notional = qty * px
+        if notional <= 0:
+            return (False, "qty computed as 0", {})
+        _record_trade(symbol, "buy", px, qty, 0.0, "market", 0)
+        return (
+            True,
+            "paper buy ok",
+            {"mode": "paper", "symbol": symbol, "side": "buy", "px": px, "qty": qty},
+        )
+
+    # --- EXCHANGE (ccxt/binance) : acheter en montant (quoteOrderQty) ---
+    try:
+        order = ex.create_order(
+            symbol=cc,
+            type="market",
+            side="buy",
+            amount=None,  # qty base non requise
+            price=None,
+            params={
+                "quoteOrderQty": usdt,  # ✅ montant en USDT (plus de problème d'arrondi)
+                "recvWindow": 5000,
+            },
+        )
+
+        # Harmonisation de la réponse
+        avg = order.get("average") or order.get("price")
+        filled = order.get("filled") or 0.0
+        px_exec = float(avg) if avg else px
+        qty_exec = float(filled or 0.0)
+
+        # Enregistre le trade à partir des valeurs réellement exécutées
+        fee = 0.0
+        try:
+            if order and order.get("fee"):
+                fee = float(order["fee"].get("cost") or 0.0)
+        except Exception:
+            pass
+
+        _record_trade(symbol, "buy", px_exec, qty_exec, fee, "market", 0)
+        return (True, "ccxt buy ok", {"order": order, "qty": qty_exec, "px": px_exec})
+
+    except Exception as e:
+        return (False, f"ccxt buy error: {e}", {})
+
+
+def place_market_sell_qty(symbol: str, qty: float) -> Tuple[bool, str, dict]:
+    # --- Quantity guard ---
+    if qty is None or qty <= 0:
+        return (False, "qty must be > 0", {})
+
+    px = http_last_price(symbol) or 0.0
+    if px <= 0:
+        return (False, "price unavailable", {})
+
+    ex = get_exchange()
+    cc = _to_ccxt_symbol(symbol)
+    (_, ad, _, min_amt) = _market_info(symbol)
+
+    # Arrondi correct :
+    # - si exchange dispo, utiliser la précision de marché ccxt
+    # - sinon, fallback sur _q_round(ad)
+    if ex is not None:
+        try:
+            ex.load_markets()
+            qty_str = ex.amount_to_precision(cc, qty)
+            qty = float(qty_str)
+        except Exception:
+            qty = _q_round(qty, ad)
+    else:
+        qty = _q_round(qty, ad)
+
+    # Vérifications minimales
+    if qty <= 0:
+        return (False, "qty computed as 0", {})
+
+    if min_amt and qty < min_amt:
+        return (False, f"qty<{min_amt}", {})
+
+    if ex is None:
+        _record_trade(symbol, "sell", px, qty, 0.0, "market", 0)
+        return (
+            True,
+            "paper sell ok",
+            {"mode": "paper", "symbol": symbol, "side": "sell", "px": px, "qty": qty},
+        )
+
+    try:
+        order = ex.create_order(
+            symbol=cc,
+            type="market",
+            side="sell",
+            amount=qty,
+            params={"recvWindow": 5000},
+        )
+
+        avg = order.get("average") or order.get("price") or px
+        filled = order.get("filled") or qty
+        fee = 0.0
+        try:
+            if order and order.get("fee"):
+                fee = float(order["fee"].get("cost") or 0.0)
+        except Exception:
+            pass
+
+        _record_trade(symbol, "sell", float(avg), float(filled), fee, "market", 0)
+        return (
+            True,
+            "ccxt sell ok",
+            {"order": order, "qty": float(filled), "px": float(avg)},
+        )
+
+    except Exception as e:
+        return (False, f"ccxt sell error: {e}", {})
+
+
+# ----------------------------- Portfolio -------------------------------------
+def compute_positions_and_cash(symbols):
+    symset = set(s.upper().replace("/", "") for s in (symbols or []))
+    pos = {s: 0.0 for s in symset} if symset else {}
+    try:
+        cash = float(kv_get("CASH_USDT") or 0.0)
+    except Exception:
+        cash = 0.0
+
+    rows = (
+        _q(
+            """
+        SELECT symbol, side, qty, price, fee
+        FROM trades
+        ORDER BY id ASC
+    """
+        )
+        or []
+    )
+
+    for r in rows:
+        sym = str(r.get("symbol") or "").upper().replace("/", "")
+        if symset and sym not in symset:
+            continue
+        side = str(r.get("side") or "").lower()
+        qty = float(r.get("qty") or 0.0)
+        price = float(r.get("price") or 0.0)
+        fee = float(r.get("fee") or 0.0)
+
+        if side == "buy":
+            pos[sym] = pos.get(sym, 0.0) + qty
+            cash -= qty * price + fee
+        elif side == "sell":
+            pos[sym] = pos.get(sym, 0.0) - qty
+            cash += qty * price - fee
+
+    return pos, cash
+
+
+# ------------------------------ Sentiments -----------------------------------
+def _parse_window_minutes(w: str) -> int:
+    try:
+        w = str(w).strip().lower()
+        if w.endswith("m"):
+            return int(w[:-1])
+        if w.endswith("h"):
+            return int(w[:-1]) * 60
+        if w.endswith("d"):
+            return int(w[:-1]) * 24 * 60
+        return int(w)
+    except Exception:
+        return 24 * 60
+
+
+def _ema(values: List[float], alpha: float = 0.1) -> float:
+    if not values:
+        return 0.0
+    ema = float(values[0])
+    a = float(alpha)
+    for x in values[1:]:
+        ema = a * float(x) + (1.0 - a) * ema
+    return ema
+
+
+def _ema_list(vals: List[float], alpha: float) -> float:
+    if not vals:
+        return 0.0
+    e = float(vals[0])
+    a = float(alpha)
+    for x in vals[1:]:
+        e = a * float(x) + (1 - a) * e
+    return e
+
+
+def _window_to_minutes(w: str) -> int:
+    try:
+        w = (w or "").strip().lower()
+        if w.endswith("m"):
+            return max(1, int(w[:-1]))
+        if w.endswith("h"):
+            return max(1, int(w[:-1]) * 60)
+        if w.endswith("d"):
+            return max(1, int(w[:-1]) * 24 * 60)
+        if w:
+            return max(1, int(w))
+    except Exception:
+        pass
+    return 24 * 60
+
+
+def _get_senti_rows(symbol: str, since_ms: int):
+    """
+    Compat: lit soit 'senti_points' (source, symbol, ts, value), soit 'senti_samples' (tw,rd,nw,tr).
+    Retourne: dict { 'tw': [(ts,v),...], 'rd': [...], 'nw': [...], 'tr': [...] }
+    """
+    out = {"tw": [], "rd": [], "nw": [], "tr": []}
+    sym = _symbol_norm(symbol)
+    conn = get_db()
+    c = conn.cursor()
+    try:
+        if _table_exists("senti_points"):
+            rows = c.execute(
+                "SELECT source,symbol,ts,value FROM senti_points WHERE symbol=? AND ts>=? ORDER BY ts ASC",
+                (sym, float(since_ms)),
+            ).fetchall()
+            for r in rows:
+                src = (r["source"] or "").lower()
+                if src in out:
+                    out[src].append((int(r["ts"]), float(r["value"])))
+        elif _table_exists("senti_samples"):
+            rows = c.execute(
+                "SELECT ts,tw,rd,nw,tr FROM senti_samples WHERE symbol=? AND ts>=? ORDER BY ts ASC",
+                (sym, float(since_ms)),
+            ).fetchall()
+            for r in rows:
+                t = int(r["ts"])
+                if r["tw"] is not None:
+                    out["tw"].append((t, float(r["tw"])))
+                if r["rd"] is not None:
+                    out["rd"].append((t, float(r["rd"])))
+                if r["nw"] is not None:
+                    out["nw"].append((t, float(r["nw"])))
+                if r["tr"] is not None:
+                    out["tr"].append((t, float(r["tr"])))
+    finally:
+        conn.close()
+    return out
+
+
+@app.route("/api/debug/routes", methods=["GET"])
+def api_debug_routes():
+    """api_debug_routes: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/debug/routes
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/debug/routes"
+    """
+    try:
+        routes = []
+        for r in app.url_map.iter_rules():
+            routes.append(
+                {
+                    "rule": str(r),
+                    "endpoint": r.endpoint,
+                    "methods": sorted(
+                        m for m in r.methods if m not in {"HEAD", "OPTIONS"}
+                    ),
+                }
+            )
+        return jsonify({"ok": True, "routes": routes})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# --- PATCH: /api/debug/senti_points (points bruts) ---
+@app.get("/api/debug/senti_points")
+def api_debug_senti_points():
+    """api_debug_senti_points: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/debug/senti_points
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/debug/senti_points"
+    """
+    symbol = _symbol_norm(request.args.get("symbol") or "BTCUSDT")
+    source = (request.args.get("source") or "rd").lower()
+    limit = int(request.args.get("limit") or "10")
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute(
+            """SELECT ts, value FROM senti_points
+                     WHERE symbol=? AND source=?
+                     ORDER BY ts DESC LIMIT ?""",
+            (symbol, source, limit),
+        )
+        rows = [{"t": int(r[0]), "v": float(r[1])} for r in c.fetchall()]
+        return jsonify({"ok": True, "symbol": symbol, "source": source, "items": rows})
+    finally:
+        conn.close()
+
+
+@app.get("/api/sentiment")
+def api_sentiment_alias():
+    """api_sentiment_alias: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/sentiment
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/sentiment"
+    """
+    return api_sentiment_summary()
+
+
+@app.get("/api/sentiment/summary")
+def api_sentiment_summary():
+    """api_sentiment_summary: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/sentiment/summary
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/sentiment/summary"
+    """
+    symbol = _symbol_norm(request.args.get("symbol") or "BTCUSDT")
+    window = request.args.get("window") or "24h"
+    lookback_min = _window_to_minutes(window)
+    since_ms = int(time.time() * 1000) - lookback_min * 60_000
+
+    rows = _get_senti_rows(
+        symbol, since_ms
+    )  # {"tw":[(t,v),...], "rd":[...], "nw":[...], "tr":[...]}
+
+    def avg(vs):
+        return (sum(v for _, v in vs) / len(vs)) if vs else None
+
+    out = {
+        "symbol": symbol,
+        "window": window,
+        "avg_tw": avg(rows.get("tw") or []),
+        "avg_rd": avg(rows.get("rd") or []),
+        "avg_nw": avg(rows.get("nw") or []),
+        "avg_tr": avg(rows.get("tr") or []),
+        "last_update": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+    }
+    return jsonify({"ok": True, **out})
+
+
+@app.get("/api/ml/sgd_status")
+def api_sgd_status():
+    """
+    Vérifie si le modèle SGD peut répondre, et renvoie des stats de PnL/nb d'exemples.
+    """
+    try:
+        feat_row = {
+            "reddit_avg": 0.0,
+            "twitter_ema": 0.0,
+            "sig_tech": 0.0,
+            "atr_pct": 0.0,
+            "ema_slope": 0.0,
+            "vol_norm": 0.0,
+            "hour_of_day": 12,
+        }
+        # essaie une prédiction rapide si dispo
+        try:
+            proba = float(kv_get("SGD_W_NORM") or 0.0)  # proxy simple si nécessaire
+        except Exception:
+            proba = None
+
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT pnl_pct FROM trades WHERE pnl_pct IS NOT NULL")
+        vals = [float(r[0]) for r in c.fetchall() if r and r[0] is not None]
+        n = len(vals)
+        win_rate = (sum(1 for v in vals if v > 0.0) / n) if n else None
+        avg_pnl = (sum(vals) / n) if n else None
+        return jsonify(
+            {
+                "ok": True,
+                "n": n,
+                "win_rate": win_rate,
+                "avg_pnl_pct": avg_pnl,
+                "proba": proba,
+            }
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.get("/api/ml/eval_simple")
+def api_ml_eval_simple():
+    """api_ml_eval_simple: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/ml/eval_simple
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/ml/eval_simple"
+    """
+    # version HTTP de ta fonction d’éval simple (win_rate, avg_pnl)
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT pnl_pct FROM trades WHERE pnl_pct IS NOT NULL")
+        vals = [float(r[0]) for r in c.fetchall() if r and r[0] is not None]
+        n = len(vals)
+        if not n:
+            return jsonify({"ok": True, "n": 0, "win_rate": None, "avg_pnl_pct": None})
+        win_rate = sum(1 for v in vals if v > 0.0) / n
+        avg_pnl = sum(vals) / n
+        return jsonify(
+            {"ok": True, "n": n, "win_rate": win_rate, "avg_pnl_pct": avg_pnl}
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# -- ML debug/status endpoints (wrappers) --
+
+
+# --- REMOVED DUPLICATE BLOCK (lines 1879-1881) ---
+
+
+# --- REMOVED DUPLICATE BLOCK (lines 1884-1886) ---
+
+
+@app.get("/api/bandit/status")
+def http_bandit_status():
+    """http_bandit_status: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/bandit/status
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/bandit/status"
+    """
+    return api_bandit_status()
+
+
+@app.post("/api/ml/learn_online")
+def http_ml_learn_online():
+    """http_ml_learn_online: endpoint auto-documenté.
+    
+    Routes:
+    - POST /api/ml/learn_online
+    
+    Exemples:
+    - curl -X POST "http://localhost:5000/api/ml/learn_online" -H "Content-Type: application/json" -d '{}'
+    """
+    return api_learn_online()
+
+
+# --- PATCH: /api/admin/twitter_once (anti-429, un symbole) ---
+@app.post("/api/admin/twitter_once")
+def api_admin_twitter_once():
+    """
+    Récupère quelques tweets récents pour UN symbole et insère 'tw' dans senti_points.
+    JSON: { "symbol":"BTCUSDT", "minutes":10, "max_results":15 }
+    """
+    j = request.get_json(silent=True) or {}
+    symbol = _symbol_norm(j.get("symbol") or "BTCUSDT")
+    minutes = int(j.get("minutes") or 10)
+    max_results = int(j.get("max_results") or 15)
+    max_results = max(10, min(max_results, 50))
+
+    bearer = env_str("TWITTER_BEARER_TOKEN") or env_str("TW_BEARER")
+    if not bearer:
+        return (
+            jsonify({"ok": False, "error": "Missing TWITTER_BEARER_TOKEN/TW_BEARER"}),
+            400,
+        )
+
+    kws = SYM_KEYWORDS.get(symbol) or ["bitcoin", "btc"]
+    query = "(" + " OR ".join(kws) + ") -is:retweet -is:reply lang:en"
+
+    now = int(time.time())
+    start = now - minutes * 60
+
+    headers = {"Authorization": f"Bearer {bearer}"}
+    url = (
+        "https://api.twitter.com/2/tweets/search/recent"
+        f"?query={requests.utils.quote(query)}"
+        f"&start_time={datetime.utcfromtimestamp(start).isoformat(timespec='seconds')}Z"
+        f"&end_time={datetime.utcfromtimestamp(now).isoformat(timespec='seconds')}Z"
+        f"&max_results={max_results}"
+        "&tweet.fields=created_at"
+    )
+
+    r = _HTTP.get(url, headers=headers, timeout=10)
+    if r.status_code == 429:
+        # lis les headers si fournis
+        reset_at = r.headers.get("x-rate-limit-reset")
+        remaining = r.headers.get("x-rate-limit-remaining")
+        LOG_BUFFER.append(
+            f"[TwitterOnce] {symbol} 429 (remaining={remaining}, reset={reset_at})"
+        )
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "rate_limited": True,
+                    "remaining": remaining,
+                    "reset": reset_at,
+                }
+            ),
+            429,
+        )
+    if not r.ok:
+        return (
+            jsonify(
+                {"ok": False, "status": r.status_code, "text": (r.text or "")[:200]}
+            ),
+            502,
+        )
+
+    js = r.json()
+    rows = []
+    for t in js.get("data") or []:
+        txt = t.get("text") or ""
+        ts = int(
+            datetime.fromisoformat(
+                t.get("created_at").replace("Z", "+00:00")
+            ).timestamp()
+            * 1000
+        )
+        score = float(tiny_polarity(txt))  # -1..+1
+        rows.append(("tw", symbol, ts, score))
+
+    if rows:
+        _db_exec_many(
+            rows, "INSERT INTO senti_points(source,symbol,ts,value) VALUES(?,?,?,?)"
+        )
+    return jsonify({"ok": True, "inserted": len(rows)})
+
+
+@app.post("/api/admin/flatten")
+def api_admin_flatten():
+    """api_admin_flatten: endpoint auto-documenté.
+    
+    Routes:
+    - POST /api/admin/flatten
+    
+    Exemples:
+    - curl -X POST "http://localhost:5000/api/admin/flatten" -H "Content-Type: application/json" -d '{}'
+    """
+    # reconstruit les positions à partir des trades
+    conn = get_db()
+    c = conn.cursor()
+    rows = c.execute("SELECT symbol, side, qty FROM trades").fetchall()
+    conn.close()
+
+    pos = {}
+    for r in rows:
+        s = _symbol_norm(r["symbol"])
+        q = float(r["qty"] or 0.0)
+        if (r["side"] or "").lower() == "buy":
+            pos[s] = pos.get(s, 0.0) + q
+        else:
+            pos[s] = pos.get(s, 0.0) - q
+
+    results = []
+    for s, q in pos.items():
+        if q > 0:
+            ok, msg, info = place_market_sell_qty(s, q)
+            results.append({"symbol": s, "qty": q, "ok": ok, "msg": msg, **info})
+
+    _, cash = compute_positions_and_cash(list(pos.keys()))
+    return jsonify({"ok": True, "flattened": results, "cash": cash})
+
+
+# --- REMOVED DUPLICATE BLOCK (lines 2009-2023) ---
+
+
+# --- REMOVED DUPLICATE BLOCK (lines 2026-2034) ---
+
+
+# ---------- séries: lit la DB (fallback stub si vide) ----------
+# [MOVED IMPORT] from collections import defaultdict
+
+
+@app.get("/api/sentiment/series")
+def api_sentiment_series():
+    """api_sentiment_series: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/sentiment/series
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/sentiment/series"
+    """
+    symbols_param = (request.args.get("symbols") or "").strip()
+    symbol = _symbol_norm(request.args.get("symbol") or "BTCUSDT")
+    window = request.args.get("window") or "24h"
+    fields_param = (request.args.get("fields") or "tw,rd,nw").lower()
+    fields = [f.strip() for f in fields_param.split(",") if f.strip()]
+    include_cb = "cb" in fields
+    fields = [f for f in fields if f != "cb"]  # cb est calculé à la volée
+
+    lookback_min = _window_to_minutes(window)
+    since_ms = int(time.time() * 1000) - lookback_min * 60_000
+
+    def build_series_for(sym: str):
+        data = _get_senti_rows(
+            sym, since_ms
+        )  # dict { "tw":[(t,v),...], "rd":[...], "nw":[...], "tr":[...] }
+        merged = []
+
+        # Cas 1 champ: on renvoie juste ce champ (utile pour debug)
+        if len(fields) == 1:
+            fld = fields[0]
+            for t, v in data.get(fld, []):
+                row = {"t": int(t), fld: float(v)}
+                if include_cb:
+                    row["cb"] = float(v)
+                merged.append(row)
+            return merged
+
+        # Plusieurs champs: jointure *sans* remplir par zéro → on n'insère que les champs *présents*
+        by_t = defaultdict(dict)
+        for f in fields:
+            for t, v in data.get(f, []):
+                by_t[int(t)][f] = float(v)
+
+        for t in sorted(by_t.keys()):
+            row = {"t": t}
+            # on ne met que les champs réellement présents à ce timestamp
+            for f, val in by_t[t].items():
+                row[f] = float(val) if val is not None else None
+            if include_cb:
+                vs = [float(x) for x in by_t[t].values()]
+                if vs:
+                    row["cb"] = float(sum(vs) / len(vs))
+            merged.append(row)
+        return merged
+
+    if symbols_param:
+        out = {}
+        for sym in [_symbol_norm(s) for s in symbols_param.split(",") if s.strip()]:
+            out[sym] = build_series_for(sym)
+        return jsonify(
+            {
+                "ok": True,
+                "symbols": list(out.keys()),
+                "fields": fields + (["cb"] if include_cb else []),
+                "window": window,
+                "items": out,
+            }
+        )
+
+    return jsonify(
+        {
+            "ok": True,
+            "symbol": symbol,
+            "fields": fields + (["cb"] if include_cb else []),
+            "window": window,
+            "series": build_series_for(symbol),
+        }
+    )
+
+
+# --- Remplacer intégralement api_sentiment_price par ceci ---
+@app.get("/api/sentiment_price")
+def api_sentiment_price():
+    """api_sentiment_price: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/sentiment_price
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/sentiment_price"
+    """
+    sym = _symbol_norm(request.args.get("symbol") or "BTCUSDT")
+    window = request.args.get("window") or "6h"
+    mins = _window_to_minutes(window)
+    since_ms = int(time.time() * 1000) - mins * 60_000
+
+    # 1) Sentiments (lit la DB : senti_points/senti_samples)
+    rows = _get_senti_rows(
+        sym, since_ms
+    )  # {"tw":[(t,v),...], "rd":[...], "nw":[...], "tr":[...]}
+
+    # combine: moyenne dispo sur (tw, rd, nw) à chaque timestamp connu des sentiments
+    by_t = {}
+    for src in ("tw", "rd", "nw"):
+        for t, v in rows.get(src, []):
+            by_t.setdefault(int(t), {})[src] = float(v)
+
+    senti_series = []
+    for t in sorted(by_t.keys()):
+        vs = [by_t[t].get(k) for k in ("tw", "rd", "nw") if by_t[t].get(k) is not None]
+        if vs:
+            cb = float(sum(vs) / len(vs))
+            senti_series.append({"t": int(t), "cb": cb})
+
+    # 2) Prix (1m)
+    kl = http_klines(sym, "1m", min(1000, mins + 2)) or []
+    price_series = []
+    for k in kl:
+        # Supporte divers formats {t, close} ou {T, c}…
+        t = int(k.get("t") or k.get("T") or 0)
+        if not t:
+            continue
+        p = float(k.get("close") or k.get("c") or k.get("price") or 0.0)
+        price_series.append({"t": t, "p": p})
+
+    # 3) Mise à l’échelle du sentiment sur l’axe des prix (pour overlay)
+    overlay_series = []
+    if senti_series and price_series:
+        p_min = min(p["p"] for p in price_series)
+        p_max = max(p["p"] for p in price_series)
+        s_min = min(s["cb"] for s in senti_series)
+        s_max = max(s["cb"] for s in senti_series)
+        if s_min == s_max:
+            s_min -= 1.0
+            s_max += 1.0
+
+        def scale_cb(y):
+            return p_min + (p_max - p_min) * ((y - s_min) / (s_max - s_min))
+
+        # jointure "faible" par timestamp (arrondi à la minute)
+        price_by_t = {int(p["t"]): p["p"] for p in price_series}
+        for s in senti_series:
+            t = int(s["t"])
+            if t in price_by_t:
+                overlay_series.append(
+                    {"t": t, "p": price_by_t[t], "cb": float(scale_cb(s["cb"]))}
+                )
+
+    # 4) EMA récap
+    def ema_of(src: str):
+        vals = [v for (_, v) in rows.get(src, [])]
+        if not vals:
+            return 0.0
+        alpha = 2.0 / (len(vals) + 1.0)
+        return round(_ema_list(vals, alpha), 3)
+
+    rd_ema = ema_of("rd")
+    tw_ema = ema_of("tw")
+    nw_ema = ema_of("nw")
+    tr_vals = [v for (_, v) in rows.get("tr", [])]
+    tr_ema = (
+        round(
+            _ema_list([v / 100.0 for v in tr_vals], 2.0 / (len(tr_vals) + 1.0)) * 100.0,
+            2,
+        )
+        if tr_vals
+        else 50.0
+    )
+
+    return jsonify(
+        {
+            "ok": True,
+            "symbol": sym,
+            "window": window,
+            "series": overlay_series,  # <— le front peut tracer p + cb
+            "rd_ema": rd_ema,
+            "tw_ema": tw_ema,
+            "nw_ema": nw_ema,
+            "tr_ema": tr_ema,
+            "last_update": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        }
+    )
+
+
+# alias pour compat côté front
+@app.get("/api/sentiment/correlation")
+@app.get("/api/sentiment_correlation")
+def api_sentiment_corr():
+    """api_sentiment_corr: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/sentiment/correlation
+    - GET /api/sentiment_correlation
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/sentiment/correlation"
+    - curl -X GET "http://localhost:5000/api/sentiment_correlation"
+    """
+    symbol = _symbol_norm(request.args.get("symbol") or "BTCUSDT")
+    # Source demandée par le front, défaut robuste = 'rd'
+    src_req = (
+        request.args.get("src") or request.args.get("field") or "rd"
+    ).lower()  # rd|nw|tr|tw
+    window = request.args.get("window") or "6h"
+    roll = int(request.args.get("roll") or 30)  # B2: fenêtre corrélation roulante
+    mins = _window_to_minutes(window)
+    since_ms = int(time.time() * 1000) - mins * 60_000
+
+    # B1 — récupérer les lignes de sentiment
+    rows_by_src = _get_senti_rows(symbol, since_ms)
+
+    # on tente d'abord la source demandée
+    src = src_req
+    senti = rows_by_src.get(src, [])
+
+    # Fallback si vide : priorité à rd puis nw, tr, tw
+    if not senti:
+        for alt in ["rd", "nw", "tr", "tw"]:
+            if alt != src_req and rows_by_src.get(alt):
+                src = alt
+                senti = rows_by_src[alt]
+                break
+
+    # Rien du tout → enveloppe vide cohérente
+    if not senti:
+        return jsonify(
+            ok=True,
+            symbol=symbol,
+            src=src_req,
+            window=window,
+            corr=None,
+            count=0,
+            items=[],
+            series=[],
+        )
+
+    # Agrégation au pas 1 minute (forward-fill)
+    by_min = {}
+    for t, v in senti:
+        t_min = (t // 60000) * 60000
+        by_min[t_min] = float(v)
+
+    # Prix 1m
+    kl = http_klines(symbol, "1m", min(1000, mins + 2))
+    if len(kl) < 3:
+        return jsonify(
+            ok=True,
+            symbol=symbol,
+            src=src,
+            window=window,
+            corr=None,
+            count=0,
+            items=[],
+            series=[],
+        )
+
+    # Construire les points (x = Δsentiment, y = retour minute)
+    points = []
+    last_px = None
+    last_se = None
+    for k in kl:
+        t = int(k["t"])
+        c = float(k["c"])
+        s = by_min.get(t, last_se)  # forward-fill
+        if last_px is not None and s is not None and last_se is not None:
+            ret = c / last_px - 1.0
+            dse = s - last_se
+            points.append({"t": t, "x": dse, "y": ret})
+        last_px = c
+        last_se = s if s is not None else last_se
+
+    n = len(points)
+    if n < 5:
+        return jsonify(
+            ok=True,
+            symbol=symbol,
+            src=src,
+            window=window,
+            corr=None,
+            count=n,
+            items=points,
+            series=[],
+        )
+
+    # Corrélation globale (Pearson)
+    xs = [p["x"] for p in points]
+    ys = [p["y"] for p in points]
+    try:
+        mx = _stats.fmean(xs)
+        my = _stats.fmean(ys)
+        num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+        denx = math.sqrt(sum((x - mx) ** 2 for x in xs))
+        deny = math.sqrt(sum((y - my) ** 2 for y in ys))
+        corr = (num / (denx * deny)) if denx > 0 and deny > 0 else 0.0
+    except Exception:
+        corr = 0.0
+
+    # B2 — série "lisible" : corrélation roulante (fenêtre = roll)
+    series = []
+    if request.args.get("series"):
+        roll = max(3, min(240, roll))
+        qx, qy = [], []
+        sx = sy = 0.0
+        for i in range(n):
+            x = xs[i]
+            y = ys[i]
+            qx.append(x)
+            qy.append(y)
+            sx += x
+            sy += y
+            if len(qx) > roll:
+                sx -= qx.pop(0)
+                sy -= qy.pop(0)
+            m = len(qx)
+            if m >= 3:
+                mxr = sx / m
+                myr = sy / m
+                num = sum((qx[j] - mxr) * (qy[j] - myr) for j in range(m))
+                denx = math.sqrt(sum((qx[j] - mxr) ** 2 for j in range(m)))
+                deny = math.sqrt(sum((qy[j] - myr) ** 2 for j in range(m)))
+                r = (num / (denx * deny)) if denx > 0 and deny > 0 else 0.0
+                series.append({"v": round(r, 4)})
+            else:
+                series.append({"v": 0.0})
+
+    return jsonify(
+        ok=True,
+        symbol=symbol,
+        src=src,
+        window=window,
+        corr=round(corr, 4),
+        count=n,
+        items=points,
+        series=series,
+    )
+
+
+# ------------------------------- Prix API ------------------------------------
+@app.get("/api/price/ticker")
+def api_price_ticker():
+    """api_price_ticker: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/price/ticker
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/price/ticker"
+    """
+    symbol = _symbol_norm(request.args.get("symbol") or "BTCUSDT")
+    px = http_last_price(symbol)
+    if px is not None:
+        bid = px * (1 - 0.0005)
+        ask = px * (1 + 0.0005)
+        mid = px
+        spread_bps = (ask - bid) / mid * 10000.0
+        return jsonify(
+            ok=True,
+            source="http",
+            symbol=symbol,
+            ts=int(time.time() * 1000),
+            last=px,
+            price=px,
+            bid=bid,
+            ask=ask,
+            mid=mid,
+            spread_bps=spread_bps,
+        )
+    rows = http_klines(symbol, "1m", 1)
+    if rows:
+        c = rows[-1]["c"]
+        return jsonify(
+            ok=True, source="ohlc", symbol=symbol, ts=rows[-1]["t"], last=c, price=c
+        )
+    return jsonify(
+        ok=True,
+        source="na",
+        symbol=symbol,
+        ts=int(time.time() * 1000),
+        last=None,
+        price=None,
+    )
+
+
+@app.get("/api/price/ohlc")
+def api_price_ohlc():
+    """api_price_ohlc: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/price/ohlc
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/price/ohlc"
+    """
+    symbol = _symbol_norm(request.args.get("symbol") or "BTCUSDT")
+    interval = request.args.get("interval") or "1m"
+    limit = int(request.args.get("limit", 120))
+    rows = http_klines(symbol, interval, limit)
+    return jsonify({"symbol": symbol, "interval": interval, "data": rows})
+
+
+@app.get("/api/price/avg20")
+def api_price_avg20():
+    """api_price_avg20: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/price/avg20
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/price/avg20"
+    """
+    symbol = _symbol_norm(request.args.get("symbol") or "BTCUSDT")
+    rows = http_klines(symbol, "1m", 20)
+    if rows:
+        avg = sum(r["c"] for r in rows) / len(rows)
+        return jsonify({"symbol": symbol, "avg": avg, "n": len(rows)})
+    px = http_last_price(symbol)
+    return jsonify(
+        {
+            "symbol": symbol,
+            "avg": px if px is not None else None,
+            "n": 1 if px is not None else 0,
+        }
+    )
+
+
+# ------------------------------ ML / Décisions --------------------------------
+@app.get("/api/ml/status")
+def api_ml_status():
+    """api_ml_status: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/ml/status
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/ml/status"
+    """
+    symbol = _symbol_norm(request.args.get("symbol") or "BTCUSDT")
+    last_pred = kv_get(f"ML_PRED:{symbol}", None)
+    if not last_pred:
+        h = sum(ord(c) for c in symbol) % 3
+        last_pred = ["hold", "buy", "sell"][h]
+    return jsonify({"symbol": symbol, "last_pred": last_pred, "class": last_pred})
+
+
+def _env_list(name: str, fallback: list[str]) -> list[str]:
+    v = os.getenv(name, "")
+    if not v:
+        return list(fallback)
+    return [s.strip().upper() for s in v.split(",") if s.strip()]
+
+
+@app.get("/api/decisions_now")
+@app.get("/api/decisions/now")
+def api_decisions_now():
+    """
+    Panneau 'Décisions — maintenant':
+      - si ?symbol=… => renvoie une décision unique
+      - sinon => renvoie la liste pour UI_SYMBOLS (ou SYMBOLS_DEFAULT)
+      - n'utilise le preview QUE si PREVIEW_ONLY=1
+      - ne renvoie jamais 404 (toujours un fallback neutre)
+    """
+    use_preview = str(os.getenv("PREVIEW_ONLY", "0")).lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    symbols_ui = _env_list("UI_SYMBOLS", SYMBOLS_DEFAULT)
+    per = _AUTOTRADE_STATE.get("per_symbol") or {}
+
+    def _build_for(sym: str) -> dict:
+        sym = _symbol_norm(sym)
+
+        # 1) état live calculé par l’autotrader (mémoire)
+        st = per.get(sym) or {}
+        if st.get("source") == "calc":
+            return {
+                "symbol": sym,
+                "action": st.get("last_decision") or "hold",
+                "price": st.get("last_price"),
+                "reason": st.get("last_reason") or "SMA_SHORT/LONG",
+                "ts": st.get("last_at"),
+                "source": "calc",
+            }
+
+        # 2) fallback KV (écrit par le thread)
+        try:
+            kv = kv_get(f"AUTOTRADE_STATE:{sym}")
+            if kv:
+                js = json.loads(kv) or {}
+                return {
+                    "symbol": sym,
+                    "action": js.get("last_decision") or "hold",
+                    "price": js.get("last_price"),
+                    "reason": js.get("last_reason") or "kv",
+                    "ts": js.get("last_at"),
+                    "source": js.get("source") or "kv",
+                }
+        except Exception as e:
+            LOG_BUFFER.append(f"[decisions-now-kv-error] {sym}: {e}")
+
+        # 3) preview uniquement si explicitement autorisé
+        if use_preview:
+            try:
+                prev = _preview_signal(sym) or {}
+                return {
+                    "symbol": sym,
+                    "action": prev.get("last_decision") or "hold",
+                    "price": prev.get("last_price"),
+                    "reason": prev.get("last_reason") or "preview",
+                    "ts": prev.get("last_at"),
+                    "source": "preview",
+                }
+            except Exception as e:
+                LOG_BUFFER.append(f"[preview-signal-error] {sym}: {e}")
+
+        # 4) défaut neutre (pas de 404)
+        return {
+            "symbol": sym,
+            "action": "hold",
+            "price": None,
+            "reason": "no-data",
+            "ts": int(time.time() * 1000),
+            "source": "none",
+        }
+
+    # --- mode 1: décision pour 1 symbole ---
+    sym = (
+        request.args.get("symbol")
+        or (request.json.get("symbol") if request.is_json and request.json else None)
+        or request.form.get("symbol")
+    )
+    if sym:
+        item = _build_for(sym)
+        return jsonify({"ok": True, **item})
+
+    # --- mode 2: liste UI ---
+    out = [_build_for(s) for s in symbols_ui]
+    return jsonify({"ok": True, "symbols": symbols_ui, "decisions": out})
+
+
+@app.get("/api/decisions/recent")
+def api_decisions_recent():
+    """api_decisions_recent: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/decisions/recent
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/decisions/recent"
+    """
+    raw_sym = (request.args.get("symbol") or "").strip()
+    symbol = _symbol_norm(raw_sym) if raw_sym else ""
+
+    try:
+        limit = int(request.args.get("limit", 20))
+    except Exception:
+        limit = 20
+    limit = max(1, min(limit, 500))
+
+    conn = get_db()
+    c = conn.cursor()
+    try:
+        if symbol:
+            q = f"""SELECT ts,symbol,action,price,qty,score,reason
+                    FROM decision_trace
+                    WHERE symbol=?
+                    ORDER BY ts DESC
+                    LIMIT {limit}"""
+            rows = c.execute(q, (symbol,)).fetchall()
+        else:
+            q = f"""SELECT ts,symbol,action,price,qty,score,reason
+                    FROM decision_trace
+                    ORDER BY ts DESC
+                    LIMIT {limit}"""
+            rows = c.execute(q).fetchall()
+
+        items = []
+        for r in rows:
+            items.append(
+                {
+                    "ts": _ts_ms(r["ts"]),
+                    "symbol": (r["symbol"] or ""),
+                    "action": (r["action"] or ""),
+                    "price": float((r["price"] or 0)),
+                    "qty": float((r["qty"] or 0)),
+                    "score": float((r["score"] or 0)),
+                    "reason": (r["reason"] or ""),
+                }
+            )
+        return jsonify({"items": items})
+    except Exception as e:
+        LOG_BUFFER.append(f"[decisions_recent-error] {e}")
+        return jsonify({"items": []})
+    finally:
+        conn.close()
+
+
+# ajoute près des autres endpoints admin
+@app.post("/api/admin/clear_logs_buffer")
+def api_admin_clear_logs_buffer():
+    """api_admin_clear_logs_buffer: endpoint auto-documenté.
+    
+    Routes:
+    - POST /api/admin/clear_logs_buffer
+    
+    Exemples:
+    - curl -X POST "http://localhost:5000/api/admin/clear_logs_buffer" -H "Content-Type: application/json" -d '{}'
+    """
+    try:
+        LOG_BUFFER.clear()
+        return jsonify({"ok": True, "cleared": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ----------------------------- Trading manuel ---------------------------------
+@app.post("/api/force/buy")
+def api_force_buy():
+    """api_force_buy: endpoint auto-documenté.
+    
+    Routes:
+    - POST /api/force/buy
+    
+    Exemples:
+    - curl -X POST "http://localhost:5000/api/force/buy" -H "Content-Type: application/json" -d '{}'
+    """
+    data = request.get_json(silent=True) or {}
+    sym = _symbol_norm(request.args.get("symbol") or data.get("symbol") or "BTCUSDT")
+    usdt = (
+        request.args.get("usdt")
+        or data.get("usdt")
+        or os.getenv("BUY_USDT_PER_TRADE")
+        or 25
+    )
+    try:
+        usdt = float(usdt)
+    except Exception:
+        return jsonify({"ok": False, "error": "invalid usdt"}), 400
+    if usdt <= 0:
+        return jsonify({"ok": False, "error": "usdt must be > 0"}), 400
+
+    try:
+        ok, msg, info = place_market_buy_usdt(sym, usdt)
+        now_ms = int(time.time() * 1000)
+
+        last_px = None
+        try:
+            lp = float(http_last_price(sym) or 0.0)
+            last_px = lp if math.isfinite(lp) and lp > 0 else None
+        except Exception:
+            pass
+
+        if ok:
+            per = _AUTOTRADE_STATE.setdefault("per_symbol", {}).setdefault(sym, {})
+            per.update(
+                {
+                    "last_at": now_ms,
+                    "last_decision": "buy",
+                    "last_price": (
+                        last_px if last_px is not None else (info or {}).get("last")
+                    ),
+                    "last_reason": "FORCE_BUY",
+                    "source": "force",
+                }
+            )
+            kv_set(f"DECISION_NOW:{sym}", "buy")
+
+            last = {
+                "t": now_ms,
+                "symbol": sym,
+                "action": "buy",
+                "price": per.get("last_price"),
+            }
+            _AUTOTRADE_STATE["last_actions"] = (
+                _AUTOTRADE_STATE.get("last_actions") or []
+            )[-29:] + [last]
+            try:
+                kv_set("AUTOTRADE_LAST_ACTION", json.dumps(last))  # global
+                kv_set(f"AUTOTRADE_LAST_ACTION:{sym}", json.dumps(last))  # par symbole
+            except Exception as e:
+                LOG_BUFFER.append(f"[last-action-save-error] {e}")
+
+        return jsonify(
+            {"ok": bool(ok), "symbol": sym, "usdt": usdt, "msg": msg, "extra": info}
+        ), (200 if ok else 400)
+
+    except Exception as e:
+        LOG_BUFFER.append(f"[force-buy-error] {sym}: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.post("/api/force/sell")
+# alias pratique
+def api_force_sell():
+    """api_force_sell: endpoint auto-documenté.
+    
+    Routes:
+    - POST /api/force/sell
+    
+    Exemples:
+    - curl -X POST "http://localhost:5000/api/force/sell" -H "Content-Type: application/json" -d '{}'
+    """
+    data = request.get_json(silent=True) or {}
+    sym = _symbol_norm(request.args.get("symbol") or data.get("symbol") or "BTCUSDT")
+
+    sell_all = str(
+        request.args.get("sell_all") or data.get("sell_all") or "0"
+    ).lower() in ("1", "true", "yes", "on", "all")
+
+    qty = request.args.get("qty", data.get("qty"))
+    if qty is not None and not sell_all:
+        try:
+            qty = float(qty)
+        except Exception:
+            return jsonify({"ok": False, "error": "invalid qty"}), 400
+    else:
+        qty = None  # on recalculera
+
+    # Détermination de la quantité à vendre
+    if sell_all or (qty is None or qty <= 0):
+        held = 0.0
+        # 1) si l'autotrader expose une méthode, on l'utilise
+        try:
+            if globals().get("_AUTOTRADER") and hasattr(_AUTOTRADER, "get_qty_held"):
+                held = float(_AUTOTRADER.get_qty_held(sym) or 0.0)
+        except Exception as e:
+            LOG_BUFFER.append(f"[get-held-autotrader-error] {sym}: {e}")
+
+        # 2) fallback via table trades si besoin
+        if held <= 0.0:
+            try:
+                conn = get_db()
+                c = conn.cursor()
+                rows = c.execute(
+                    "SELECT side, qty FROM trades WHERE symbol=?", (sym,)
+                ).fetchall()
+                conn.close()
+                for r in rows:
+                    side = (r["side"] or "").lower()
+                    q = float(r["qty"] or 0)
+                    held += q if side == "buy" else -q
+            except Exception as e:
+                LOG_BUFFER.append(f"[get-held-trades-error] {sym}: {e}")
+        qty = max(0.0, held)
+
+    if qty is None or qty <= 0:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "no position to sell",
+                    "symbol": sym,
+                    "held": qty or 0.0,
+                }
+            ),
+            400,
+        )
+
+    try:
+        ok, msg, info = place_market_sell_qty(sym, float(qty))
+        now_ms = int(time.time() * 1000)
+
+        last_px = None
+        try:
+            lp = float(http_last_price(sym) or 0.0)
+            last_px = lp if math.isfinite(lp) and lp > 0 else None
+        except Exception:
+            pass
+
+        if ok:
+            per = _AUTOTRADE_STATE.setdefault("per_symbol", {}).setdefault(sym, {})
+            per.update(
+                {
+                    "last_at": now_ms,
+                    "last_decision": "sell",
+                    "last_price": (
+                        last_px if last_px is not None else (info or {}).get("last")
+                    ),
+                    "last_reason": "FORCE_SELL_ALL" if sell_all else "FORCE_SELL",
+                    "source": "force",
+                }
+            )
+            kv_set(f"DECISION_NOW:{sym}", "sell")
+
+            last = {
+                "t": now_ms,
+                "symbol": sym,
+                "action": "sell",
+                "price": per.get("last_price"),
+            }
+            _AUTOTRADE_STATE["last_actions"] = (
+                _AUTOTRADE_STATE.get("last_actions") or []
+            )[-29:] + [last]
+            try:
+                kv_set("AUTOTRADE_LAST_ACTION", json.dumps(last))  # global
+                kv_set(f"AUTOTRADE_LAST_ACTION:{sym}", json.dumps(last))  # par symbole
+            except Exception as e:
+                LOG_BUFFER.append(f"[last-action-save-error] {e}")
+
+        return jsonify(
+            {
+                "ok": bool(ok),
+                "symbol": sym,
+                "qty": float(qty),
+                "msg": msg,
+                "extra": info,
+            }
+        ), (200 if ok else 400)
+
+    except Exception as e:
+        LOG_BUFFER.append(f"[force-sell-error] {sym}: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.post("/api/force/sell_all")
+def api_force_sell_all():
+    """api_force_sell_all: endpoint auto-documenté.
+    
+    Routes:
+    - POST /api/force/sell_all
+    
+    Exemples:
+    - curl -X POST "http://localhost:5000/api/force/sell_all" -H "Content-Type: application/json" -d '{}'
+    """
+    js = request.get_json(force=True, silent=True) or {}
+    js["sell_all"] = True
+    request._cached_json = (js, js)  # pour que l'autre handler le relise
+    return api_force_sell()
+
+
+# ------------------------------ Strategy presets ------------------------------
+_PRESETS = [
+    {"key": "default", "name": "Par défaut"},
+    {"key": "aggressive", "name": "Agressif"},
+    {"key": "conservative", "name": "Conservateur"},
+]
+
+
+@app.get("/api/strategy/presets")
+def api_presets():
+    """api_presets: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/strategy/presets
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/strategy/presets"
+    """
+    return jsonify({"presets": _PRESETS})
+
+
+@app.post("/api/strategy/apply")
+def api_apply_preset():
+    """api_apply_preset: endpoint auto-documenté.
+    
+    Routes:
+    - POST /api/strategy/apply
+    
+    Exemples:
+    - curl -X POST "http://localhost:5000/api/strategy/apply" -H "Content-Type: application/json" -d '{}'
+    """
+    js = request.get_json(force=True, silent=True) or {}
+    symbol = _symbol_norm(js.get("symbol") or "BTCUSDT")
+    preset = js.get("preset") or "default"
+    kv_set(f"PRESET:{symbol}", preset)
+    LOG_BUFFER.append(
+        f"[{datetime.now().isoformat(timespec='seconds')}] PRESET {symbol} -> {preset}"
+    )
+    return jsonify({"ok": True})
+
+
+# --------------------------- Trades / Logs / News / Sim -----------------------
+@app.get("/api/trades")
+def api_trades():
+    """api_trades: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/trades
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/trades"
+    """
+    symbol = _symbol_norm(request.args.get("symbol") or "")
+    try:
+        limit = int(request.args.get("limit", 100))
+    except Exception:
+        limit = 100
+    limit = max(1, min(limit, 1000))
+
+    conn = get_db()
+    c = conn.cursor()
+    if symbol:
+        rows = c.execute(
+            "SELECT ts, symbol, side, price, qty, fee, order_type, maker "
+            f"FROM trades WHERE symbol=? ORDER BY ts DESC LIMIT {limit}",
+            (symbol,),
+        ).fetchall()
+    else:
+        rows = c.execute(
+            "SELECT ts, symbol, side, price, qty, fee, order_type, maker "
+            f"FROM trades ORDER BY ts DESC LIMIT {limit}"
+        ).fetchall()
+    conn.close()
+
+    trades = [
+        dict(
+            ts=_ts_ms(r["ts"]),
+            symbol=r["symbol"],
+            side=r["side"],
+            price=r["price"],
+            qty=r["qty"],
+            fee=r["fee"],
+            order_type=r["order_type"],
+            maker=r["maker"],
+        )
+        for r in rows
+    ]
+    return jsonify({"trades": trades})
+
+
+@app.get("/api/logs")
+def api_logs():
+    """api_logs: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/logs
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/logs"
+    """
+    try:
+        limit = int(request.args.get("limit", request.args.get("tail", 200)))
+    except Exception:
+        limit = 200
+    limit = max(1, min(limit, 2000))
+    lines = list(LOG_BUFFER)[-limit:]
+    if not lines:
+        lines = ["[info] aucun log récent — le service tourne."]
+    return jsonify({"lines": lines})
+
+
+# ------------------------------ News + senti ----------------------------------
+SYM_KEYWORDS = {
+    "BTCUSDT": ["bitcoin", "btc"],
+    "ETHUSDT": ["ethereum", "eth"],
+    "BNBUSDT": ["bnb"],
+    "SOLUSDT": ["solana", "sol"],
+    "PEPEUSDT": ["pepe"],
+    "DOGEUSDT": ["dogecoin", "doge"],
+    "LINKUSDT": ["chainlink", "link"],
+    "XRPUSDT": ["xrp", "ripple"],
+    "ADAUSDT": ["cardano", "ada"],
+    "AVAXUSDT": ["avalanche", "avax"],
+}
+
+POS_WORDS = set(
+    "bull moon pump breakout rally surge strong profit uptrend positive buy green win".split()
+)
+NEG_WORDS = set(
+    "bear dump crash rug pull weak loss downtrend negative sell red lose scam".split()
+)
+
+
+def tiny_polarity(text: str) -> float:
+    # On re-route vers VADER (plus robuste). Si jamais VADER n'est pas dispo, on retombe
+    # sur l’ancienne logique lexicale.
+    try:
+        return float(_sent_score(text or ""))
+    except Exception:
+        # --- fallback ancien mini-lexique ---
+        t = (text or "").lower()
+        POS = (
+            " bull",
+            " bullish",
+            " bull-run",
+            " moon",
+            " mooning",
+            " pump",
+            " rally",
+            " breakout",
+        )
+        NEG = (
+            " bear",
+            " bearish",
+            " dump",
+            " rug",
+            " rugpull",
+            " liquidation",
+            " panic",
+            " fear",
+        )
+        pos = sum(1 for w in POS if w.strip() in t)
+        neg = sum(1 for w in NEG if w.strip() in t)
+        if pos == neg == 0:
+            return 0.0
+        return max(-1.0, min(1.0, (pos - neg) / 3.0))
+
+
+def _db_exec_many(rows, insert_sql):
+    if not rows:
+        return
+    conn = get_db()
+    c = conn.cursor()
+    c.executemany(insert_sql, rows)
+    conn.commit()
+    conn.close()
+
+
+@app.get("/api/news")
+def api_news():
+    """api_news: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/news
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/news"
+    """
+    symbol = _symbol_norm(request.args.get("symbol") or "")
+    limit = int(request.args.get("limit", 12))
+    conn = get_db()
+    c = conn.cursor()
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS news(symbol TEXT, ts REAL, title TEXT, url TEXT, source TEXT)"
+    )
+
+    def _fetch_if_empty(sym):
+        token = env_str("CRYPTOPANIC_TOKEN")
+        newsapi = env_str("NEWSAPI_KEY")
+        rows = []
+        rows_nw = []
+        now = int(time.time() * 1000)
+        kws = SYM_KEYWORDS.get(sym, [sym[:3].lower()])
+        q = " OR ".join(kws)
+        try:
+            if token:
+                url = f"https://cryptopanic.com/api/v1/posts/?auth_token={token}&currencies={sym[:3].lower()}&q={requests.utils.quote(q)}"
+                r = _HTTP.get(url, timeout=8)
+                if r.ok:
+                    js = r.json()
+                    for it in js.get("results") or []:
+                        title = it.get("title") or ""
+                        url2 = it.get("url") or ""
+                        ts = int((it.get("published_at_ts") or 0)) * 1000 or now
+                        rows.append((sym, ts, title, url2, "CryptoPanic"))
+                        score = tiny_polarity(title)
+                        rows_nw.append(("nw", sym, ts, float(score)))
+            elif newsapi:
+                url = (
+                    "https://newsapi.org/v2/everything?"
+                    + f"q={requests.utils.quote(q)}&language=en&sortBy=publishedAt&pageSize=10&apiKey={newsapi}"
+                )
+                r = _HTTP.get(url, timeout=8)
+                if r.ok:
+                    js = r.json()
+                    for a in js.get("articles") or []:
+                        title = a.get("title") or ""
+                        url2 = a.get("url") or ""
+                        ts = int(
+                            datetime.fromisoformat(
+                                (
+                                    a.get("publishedAt") or "1970-01-01T00:00:00+00:00"
+                                ).replace("Z", "+00:00")
+                            ).timestamp()
+                            * 1000
+                        )
+                        rows.append(
+                            (
+                                sym,
+                                ts,
+                                title,
+                                url2,
+                                a.get("source", {}).get("name") or "newsapi",
+                            )
+                        )
+                        score = tiny_polarity(title)
+                        rows_nw.append(("nw", sym, ts, float(score)))
+        except Exception as e:
+            LOG_BUFFER.append(f"[api_news-fetch] {e}")
+        if rows:
+            c.executemany(
+                "INSERT INTO news(symbol,ts,title,url,source) VALUES(?,?,?,?,?)", rows
+            )
+        if rows_nw:
+            c.executemany(
+                "INSERT INTO senti_points(source,symbol,ts,value) VALUES(?,?,?,?)",
+                rows_nw,
+            )
+        if rows or rows_nw:
+            conn.commit()
+
+    if symbol:
+        rows = c.execute(
+            "SELECT ts,title,url,source FROM news WHERE symbol=? ORDER BY ts DESC LIMIT ?",
+            (symbol, limit),
+        ).fetchall()
+        if not rows:
+            _fetch_if_empty(symbol)
+            rows = c.execute(
+                "SELECT ts,title,url,source FROM news WHERE symbol=? ORDER BY ts DESC LIMIT ?",
+                (symbol, limit),
+            ).fetchall()
+        items = [
+            dict(ts=float(ts or 0), title=title, url=url, source=source)
+            for (ts, title, url, source) in rows
+        ]
+        conn.close()
+        return jsonify({"ok": True, "symbol": symbol, "items": items})
+    else:
+        rows = c.execute(
+            "SELECT symbol,ts,title,url,source FROM news ORDER BY ts DESC LIMIT ?",
+            (limit * 10,),
+        ).fetchall()
+        conn.close()
+        groups: Dict[str, List[dict]] = defaultdict(list)
+        for sym, ts, title, url, source in rows:
+            groups[_symbol_norm(sym)].append(
+                dict(ts=float(ts or 0), title=title, url=url, source=source)
+            )
+        return jsonify({"ok": True, "items": groups})
+
+
+# ------------------------------ Sim rapide ------------------------------------
+@app.post("/api/sim/quick")
+def api_sim_quick():
+    """api_sim_quick: endpoint auto-documenté.
+    
+    Routes:
+    - POST /api/sim/quick
+    
+    Exemples:
+    - curl -X POST "http://localhost:5000/api/sim/quick" -H "Content-Type: application/json" -d '{}'
+    """
+    js = request.get_json(force=True, silent=True) or {}
+    symbol = _symbol_norm(js.get("symbol") or "BTCUSDT")
+    try:
+        usdt = float(js.get("usdt", 0))
+    except Exception:
+        usdt = 0.0
+    tpsl_raw = str(js.get("tpsl") or "1.0/0.5").replace(",", "/").replace(" ", "")
+    try:
+        tp_s, sl_s = tpsl_raw.split("/")
+        tp = max(0.0, float(tp_s))
+        sl = max(0.0, float(sl_s))
+    except Exception:
+        tp, sl = 1.0, 0.5
+
+    price = http_last_price(symbol) or 0.0
+    if price <= 0:
+        kl1 = http_klines(symbol, "1m", 1)
+        if kl1:
+            price = float(kl1[-1]["c"])
+    if price <= 0:
+        kl20 = http_klines(symbol, "1m", 20)
+        if kl20:
+            price = sum(float(r["c"]) for r in kl20) / len(kl20)
+
+    if usdt <= 0:
+        return jsonify({"ok": False, "error": "USDT doit être > 0"}), 400
+    if price <= 0:
+        return jsonify({"ok": False, "error": f"Prix indisponible pour {symbol}"}), 503
+
+    qty = usdt / price
+    tp_price = price * (1 + tp / 100.0)
+    sl_price = price * (1 - sl / 100.0)
+
+    return jsonify(
+        {
+            "ok": True,
+            "symbol": symbol,
+            "price": price,
+            "usdt": usdt,
+            "qty": qty,
+            "tp_pct": tp,
+            "sl_pct": sl,
+            "tp_price": tp_price,
+            "sl_price": sl_price,
+            "summary": (
+                f"Symbol: {symbol}\n"
+                f"Buy: {qty:.6f} @ {price:.4f}\n"
+                f"TP: {tp}% -> {tp_price:.4f}\n"
+                f"SL: {sl}% -> {sl_price:.4f}"
+            ),
+        }
+    )
+
+
+# --------------------------- Portfolio summary --------------------------------
+@app.get("/api/portfolio/summary")
+def api_portfolio_summary():
+    """api_portfolio_summary: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/portfolio/summary
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/portfolio/summary"
+    """
+# [MOVED IMPORT]     import os, math, time
+
+    def _clamp(x, lo, hi):
+        try:
+            x = float(x)
+        except Exception:
+            return lo
+        if not math.isfinite(x):
+            return lo
+        return min(max(x, lo), hi)
+
+    # --- Liste de symboles (robuste si SYMBOLS_DEFAULT n'est pas défini) ---
+    syms = request.args.get("symbols")
+    if syms:
+        raw_list = [s.strip() for s in syms.split(",") if s.strip()]
+    else:
+        try:
+            raw_list = list(SYMBOLS_DEFAULT)  # peut être list ou tuple
+        except NameError:
+            raw_list = [
+                "BTCUSDT",
+                "ETHUSDT",
+                "BNBUSDT",
+                "SOLUSDT",
+                "PEPEUSDT",
+                "DOGEUSDT",
+                "LINKUSDT",
+                "XRPUSDT",
+                "ADAUSDT",
+                "AVAXUSDT",
+            ]
+    symbols = [_symbol_norm(s) for s in raw_list]
+
+    # --- Positions + cash ---
+    try:
+        pos_map, cash = compute_positions_and_cash(symbols)
+    except Exception:
+        # fallback ultra-simple si le backend DB n'est pas prêt
+        try:
+            cash = float(os.getenv("CASH_USDT", "0") or 0.0)
+        except Exception:
+            cash = 0.0
+        pos_map = {}
+
+    # --- Helpers marché: arrondi + seuils d'échange ---
+    def _market_round(
+        sym, qty
+    ):  # -> qty_rounded, epsilon_qty, min_notional, min_amount
+        try:
+            _, amount_digits, min_notional, min_amount = _market_info(sym)
+        except Exception:
+            amount_digits, min_notional, min_amount = None, 0.0, 0.0
+
+        step_env = float(os.getenv("QTY_STEP", "0"))
+        if amount_digits is not None and amount_digits >= 0:
+            step = 10.0 ** -int(amount_digits)
+        else:
+            step = step_env if step_env > 0 else 1e-6
+
+        min_qty_env = float(os.getenv("MIN_BASE_QTY", "0"))
+        min_qty = max(float(min_amount or 0.0), float(min_qty_env or 0.0))
+
+        epsilon_qty = max(min_qty, step)
+        qty_rounded = step * math.floor(float(qty) / step) if step > 0 else float(qty)
+        return (
+            float(qty_rounded),
+            float(epsilon_qty),
+            float(min_notional or 0.0),
+            float(min_amount or 0.0),
+        )
+
+    positions = []
+    gross = float(cash)
+
+    for s in symbols:
+        raw_qty = float(pos_map.get(s, 0.0))
+        qty_rounded, eps, min_notional, min_amount = _market_round(s, raw_qty)
+
+        try:
+            last = float(http_last_price(s) or 0.0)
+        except Exception:
+            last = 0.0
+
+        # notionnel "réel" (arrondi, donc tradable)
+        notional = abs(qty_rounded * last)
+
+        # Masque visuel si réellement non tradable (poussière)
+        hide_as_dust = (min_amount > 0 and abs(qty_rounded) < min_amount) and (
+            min_notional > 0 and last > 0 and notional < min_notional
+        )
+        qty_display = 0.0 if hide_as_dust else qty_rounded
+
+        # La valeur qui compte pour la valeur brute = quantité arrondie * prix
+        val = qty_rounded * last
+        if math.isfinite(val):
+            gross += val
+
+        positions.append(
+            {
+                "symbol": s,
+                "qty": raw_qty,  # quantité “vraie” (non quantized)
+                "qty_display": qty_display,  # pour l’UI seulement
+                "last": last,
+                "value": val,  # valeur utilisée pour gross
+                "qty_raw": raw_qty,
+                "qty_step": eps,
+                "notional": notional,
+            }
+        )
+
+    # --- Hypothèses de sortie (bornées) ---
+    fee_rate_raw = (
+        os.getenv("EXIT_FEE_RATE")
+        or os.getenv("FEE_RATE_SELL")
+        or os.getenv("FEE_RATE_TAKER")
+        or "0.001"
+    )
+    # bornage frais 0.00% … 1.00%
+    fee_rate = _clamp(fee_rate_raw, 0.0, 0.01)
+
+    slip_bps_raw = os.getenv("EXIT_SLIPPAGE_BPS") or os.getenv("SLIPPAGE_BPS") or "10"
+    # bornage slippage 0 … 200 bps (0 … 2.00%)
+    slip_bps = _clamp(slip_bps_raw, 0.0, 200.0)
+    slip_rate = slip_bps / 10000.0
+
+    # --- Coût de sortie estimé: basé sur la quantité arrondie (cohérent avec gross) ---
+    est_exit_cost = 0.0
+    for p in positions:
+        notional_abs = abs(float(p["value"]))  # = abs(qty_rounded * last)
+        est_exit_cost += notional_abs * (fee_rate + slip_rate)
+
+    # --- Valeur nette ---
+    net = max(0.0, float(gross) - float(est_exit_cost))
+
+    return jsonify(
+        {
+            "ok": True,
+            "ts": int(time.time() * 1000),
+            "cash_usdt": float(cash),
+            "gross_value_usdt": float(gross),
+            "net_value_usdt": float(net),
+            "est_exit_cost_usdt": float(est_exit_cost),
+            "assumptions": {
+                "exit_fee_rate": float(fee_rate),
+                "exit_slippage_bps": float(slip_bps),
+            },
+            "positions": positions,
+        }
+    )
+
+
+# ------------------------------ Autotrade preview helper ----------------------
+def _preview_signal(sym: str) -> dict:
+    kl = http_klines(sym, "1m", max(SMA_LONG + 5, 210))
+    closes = [r["c"] for r in kl]
+    if len(closes) < SMA_LONG:
+        return {
+            "last_price": closes[-1] if closes else None,
+            "last_decision": "hold",
+            "last_reason": "insuff. data",
+        }
+    s_short = sum(closes[-SMA_SHORT:]) / SMA_SHORT
+    s_long = sum(closes[-SMA_LONG:]) / SMA_LONG
+    trigger = (SMA_TRIGGER_BPS / 10000.0) * s_long
+    action = "hold"
+    if s_short > s_long + trigger:
+        action = "buy"
+    elif s_short < s_long - trigger:
+        action = "sell"
+    return {
+        "sma_short": s_short,
+        "sma_long": s_long,
+        "last_at": int(time.time() * 1000),
+        "last_decision": action,
+        "last_price": closes[-1],
+        "last_reason": "SMA50/200 (preview)",
+    }
+
+
+# ------------------------------ Autotrade UI ----------------------------------
+@app.get("/api/autotrade_state")
+def api_autotrade_state():
+    """api_autotrade_state: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/autotrade_state
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/autotrade_state"
+    """
+    paused = kv_get_bool("AUTO_TRADE_PAUSED", _AUTOTRADE_STATE.get("paused", False))
+    _AUTOTRADE_STATE.setdefault("per_symbol", {})
+    _AUTOTRADE_STATE["paused"] = paused
+    _AUTOTRADE_STATE["status"] = "paused" if paused else "running"
+    _AUTOTRADE_STATE["last_ts"] = int(time.time() * 1000)
+
+    PREVIEW_ONLY = os.getenv("PREVIEW_ONLY", "0").lower() in ("1", "true", "yes", "on")
+
+    def _state_for(sym: str):
+        st = (_AUTOTRADE_STATE.get("per_symbol") or {}).get(sym)
+        if st and not PREVIEW_ONLY and st.get("source") == "calc":
+            return st
+        if not PREVIEW_ONLY:
+            try:
+                raw = kv_get(f"AUTOTRADE_STATE:{sym}")
+                if raw:
+                    js = json.loads(raw)
+                    if js.get("source") == "calc":
+                        return js
+            except Exception as e:
+                LOG_BUFFER.append(f"[state-kv-load-error] {e}")
+        return _preview_signal(sym)
+
+    try:
+        for sym in SYMBOLS_DEFAULT:
+            _AUTOTRADE_STATE["per_symbol"][sym] = _state_for(sym)
+    except Exception as e:
+        LOG_BUFFER.append(f"[preview-error] {e}")
+
+    return jsonify(_AUTOTRADE_STATE)
+
+
+# NEW: endpoints pause/resume/toggle pour éviter 405
+@app.post("/api/autotrade/pause")
+def api_autotrade_pause():
+    """api_autotrade_pause: endpoint auto-documenté.
+    
+    Routes:
+    - POST /api/autotrade/pause
+    
+    Exemples:
+    - curl -X POST "http://localhost:5000/api/autotrade/pause" -H "Content-Type: application/json" -d '{}'
+    """
+    kv_set("AUTO_TRADE_PAUSED", "1")
+    _AUTOTRADE_STATE["paused"] = True
+    _AUTOTRADE_STATE["status"] = "paused"
+    LOG_BUFFER.append("[AUTOTRADE] -> PAUSE")
+    return jsonify({"ok": True, "paused": True, "status": "paused"})
+
+
+@app.post("/api/autotrade/resume")
+def api_autotrade_resume():
+    """api_autotrade_resume: endpoint auto-documenté.
+    
+    Routes:
+    - POST /api/autotrade/resume
+    
+    Exemples:
+    - curl -X POST "http://localhost:5000/api/autotrade/resume" -H "Content-Type: application/json" -d '{}'
+    """
+    kv_set("AUTO_TRADE_PAUSED", "0")
+    _AUTOTRADE_STATE["paused"] = False
+    _AUTOTRADE_STATE["status"] = "running"
+    LOG_BUFFER.append("[AUTOTRADE] -> RUN")
+    return jsonify({"ok": True, "paused": False, "status": "running"})
+
+
+@app.post("/api/autotrade_toggle")
+def api_autotrade_toggle():
+    """api_autotrade_toggle: endpoint auto-documenté.
+    
+    Routes:
+    - POST /api/autotrade_toggle
+    
+    Exemples:
+    - curl -X POST "http://localhost:5000/api/autotrade_toggle" -H "Content-Type: application/json" -d '{}'
+    """
+    paused = kv_get_bool("AUTO_TRADE_PAUSED", True)
+    if paused:
+        kv_set("AUTO_TRADE_PAUSED", "0")
+        _AUTOTRADE_STATE["paused"] = False
+        _AUTOTRADE_STATE["status"] = "running"
+        LOG_BUFFER.append("[AUTOTRADE] -> RUN (toggle)")
+        return jsonify({"ok": True, "paused": False, "status": "running"})
+    else:
+        kv_set("AUTO_TRADE_PAUSED", "1")
+        _AUTOTRADE_STATE["paused"] = True
+        _AUTOTRADE_STATE["status"] = "paused"
+        LOG_BUFFER.append("[AUTOTRADE] -> PAUSE (toggle)")
+        return jsonify({"ok": True, "paused": True, "status": "paused"})
+
+
+# ------------------------------ Admin KV --------------------------------------
+@app.post("/api/admin/fix_kv")
+def api_admin_fix_kv():
+    """api_admin_fix_kv: endpoint auto-documenté.
+    
+    Routes:
+    - POST /api/admin/fix_kv
+    
+    Exemples:
+    - curl -X POST "http://localhost:5000/api/admin/fix_kv" -H "Content-Type: application/json" -d '{}'
+    """
+    conn = get_db()
+    c = conn.cursor()
+    try:
+        c.execute("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT)")
+        cols = [r[1] for r in c.execute("PRAGMA table_info(kv)").fetchall()]
+        if cols == ["k", "v"] or ("k" in cols and "v" in cols and "key" not in cols):
+            c.execute(
+                "CREATE TABLE IF NOT EXISTS kv_new (key TEXT PRIMARY KEY, value TEXT)"
+            )
+            c.execute("INSERT OR REPLACE INTO kv_new(key,value) SELECT k, v FROM kv")
+            c.execute("DROP TABLE kv")
+            c.execute("ALTER TABLE kv_new RENAME TO kv")
+        conn.commit()
+        return jsonify({"ok": True})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.post("/api/admin/reset_paper")
+def api_admin_reset_paper():
+    """api_admin_reset_paper: endpoint auto-documenté.
+    
+    Routes:
+    - POST /api/admin/reset_paper
+    
+    Exemples:
+    - curl -X POST "http://localhost:5000/api/admin/reset_paper" -H "Content-Type: application/json" -d '{}'
+    """
+    js = request.get_json(force=True, silent=True) or {}
+    cash = float(js.get("cash") or 0)
+    wipe_news = bool(js.get("wipe_news", False))
+    pause = bool(js.get("pause", True))
+    conn = get_db()
+    c = conn.cursor()
+    try:
+        c.execute("DELETE FROM trades")
+        c.execute("DELETE FROM decision_trace")
+        c.execute("DELETE FROM snapshots")
+        c.execute("DELETE FROM logs2")
+        if wipe_news:
+            c.execute("DELETE FROM news")
+        c.execute("DELETE FROM kv WHERE key LIKE 'DECISION_NOW:%'")
+        c.execute(
+            "INSERT OR REPLACE INTO kv(k,v) VALUES(?,?)", ("CASH_USDT", str(cash))
+        )
+        if pause:
+            c.execute(
+                "INSERT OR REPLACE INTO kv(k,v) VALUES(?,?)", ("AUTO_TRADE_PAUSED", "1")
+            )
+        conn.commit()
+        _AUTOTRADE_STATE.update(
+            {
+                "last_actions": [],
+                "per_symbol": {},
+                "paused": True if pause else _AUTOTRADE_STATE.get("paused", True),
+                "status": (
+                    "paused" if pause else _AUTOTRADE_STATE.get("status", "paused")
+                ),
+            }
+        )
+        try:
+            _AUTOTRADE_THREAD.last_trade_ts.clear()
+        except Exception:
+            pass
+        return jsonify({"ok": True, "cash": cash, "paused": pause})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.post("/api/admin/set_cash")
+def api_admin_set_cash():
+    """api_admin_set_cash: endpoint auto-documenté.
+    
+    Routes:
+    - POST /api/admin/set_cash
+    
+    Exemples:
+    - curl -X POST "http://localhost:5000/api/admin/set_cash" -H "Content-Type: application/json" -d '{}'
+    """
+    js = request.get_json(force=True, silent=True) or {}
+    cash = float(js.get("cash") or 0)
+    kv_set("CASH_USDT", str(cash))
+    return jsonify({"ok": True, "cash": cash})
+
+
+# --------------------------- Autotrade Loop (SMA) -----------------------------
+class AutoTrader(threading.Thread):
+    def __init__(self, symbols: List[str]):
+        super().__init__(daemon=True)
+        self.symbols = symbols
+        self.last_trade_ts: Dict[str, float] = {}  # cooldown par symbole
+        self.running = True
+
+    def log(self, msg: str):
+        LOG_BUFFER.append(f"[{datetime.now().isoformat(timespec='seconds')}] {msg}")
+
+    def sma(self, arr: List[float], n: int) -> float:
+        if len(arr) < n:
+            return float("nan")
+        return sum(arr[-n:]) / n
+
+    # ⬇️⬇️ CORRIGÉ : méthode de classe (indentée)
+    def get_qty_held(self, symbol: str) -> float:
+        sym = _symbol_norm(symbol)
+
+        # 1) Quantité théorique (buys - sells)
+        conn = get_db()
+        try:
+            c = conn.cursor()
+            rows = c.execute(
+                "SELECT side, qty FROM trades WHERE symbol=?", (sym,)
+            ).fetchall()
+        finally:
+            conn.close()
+
+        qty = 0.0
+        for r in rows:
+            side = (r["side"] or "").lower()
+            q = float(r["qty"] or 0.0)
+            qty += q if side == "buy" else -q
+
+        # 2) Contraintes de marché
+        try:
+            # _market_info -> (price_digits, amount_digits, min_notional, min_amount)
+            _, amt_digits, min_notional, min_amt = _market_info(sym)
+        except Exception:
+            amt_digits, min_notional, min_amt = None, 0.0, 0.0
+
+        # Pas (step)
+        try:
+            step_env = float(env_str("QTY_STEP") or 0.0)
+        except Exception:
+            step_env = 0.0
+        step = (
+            (10.0 ** -(amt_digits or 0))
+            if (amt_digits is not None and amt_digits >= 0)
+            else (step_env if step_env > 0 else 0.0)
+        )
+
+        # Min qty = max(exchange, ENV)
+        try:
+            min_qty_env = float(env_str("MIN_BASE_QTY") or 0.0)
+        except Exception:
+            min_qty_env = 0.0
+        min_qty = max(float(min_amt or 0.0), float(min_qty_env or 0.0), 0.0)
+
+        # 3) Arrondi au pas
+        if step and step > 0:
+            qty = step * math.floor(qty / step)  # quantize “vers le bas”
+
+        # 4) Clamp sous min_qty
+        if min_qty > 0 and abs(qty) < min_qty:
+            return 0.0
+
+        # 5) Clamp sous min_notional
+        try:
+            last = float(http_last_price(sym) or 0.0)
+        except Exception:
+            last = 0.0
+        if (
+            last > 0
+            and float(min_notional or 0.0) > 0
+            and abs(qty * last) < float(min_notional)
+        ):
+            return 0.0
+
+        return float(qty)
+
+    # ⬇️⬇️ CORRIGÉ : méthode de classe (indentée)
+
+    def step_symbol(self, sym: str):
+        now = time.time()
+
+        # Cooldown
+        if now - float(self.last_trade_ts.get(sym, 0.0) or 0.0) < float(COOLDOWN_SEC):
+            return
+
+        # Prix 1m (historique pour SMA_LONG)
+        try:
+            kl = http_klines(sym, "1m", max(int(SMA_LONG) + 5, 210))
+        except Exception:
+            return
+        closes = [float(r.get("c") or r.get("close") or 0.0) for r in (kl or []) if r]
+        if len(closes) < int(SMA_LONG):
+            return
+
+        # SMAs
+        s_short = float(self.sma(closes, int(SMA_SHORT)))
+        s_long = float(self.sma(closes, int(SMA_LONG)))
+        if not (math.isfinite(s_short) and math.isfinite(s_long)):
+            return
+
+        # Déclencheur
+        trigger = (float(SMA_TRIGGER_BPS) / 10000.0) * s_long
+
+        # Décision
+        action = "hold"
+        if s_short > s_long + trigger:
+            action = "buy"
+        elif s_short < s_long - trigger:
+            action = "sell"
+
+        # État calculé (pas de preview) + persistance KV
+        _AUTOTRADE_STATE.setdefault("per_symbol", {}).setdefault(sym, {})
+        state = {
+            "sma_short": s_short,
+            "sma_long": s_long,
+            "last_at": int(time.time() * 1000),
+            "last_decision": action,
+            "last_price": closes[-1],
+            "last_reason": "SMA_SHORT/LONG",
+            "source": "calc",
+        }
+        _AUTOTRADE_STATE["per_symbol"][sym].update(state)
+        try:
+            kv_set(f"AUTOTRADE_STATE:{sym}", json.dumps(state))
+        except Exception as e:
+            LOG_BUFFER.append(f"[state-kv-save-error] {e}")
+
+        # Décision instantanée (debug)
+        try:
+            kv_set(f"DECISION_NOW:{sym}", action)
+        except Exception:
+            pass
+
+        # === Exécution ===
+        if action == "buy":
+            try:
+                _, _, min_notional, _ = _market_info(sym)
+            except Exception:
+                min_notional = 5.0
+
+            base_usdt = float(env_str("BUY_USDT_PER_TRADE") or 0.0)
+            frac = float(env_str("BUY_FRACTION_NET") or 0.03)
+            floor_usd = float(env_str("BUY_MIN_USDT") or 6.0)
+            buf = float(env_str("NOTIONAL_BUFFER") or 1.3)
+
+            net = float(_AUTOTRADE_STATE.get("last_net_usdt") or 0.0)
+            if not net:
+                try:
+                    res = api_portfolio_summary()
+                    js = res.get_json() if hasattr(res, "get_json") else None
+                    net = float((js or {}).get("net_value_usdt") or 0.0)
+                    _AUTOTRADE_STATE["last_net_usdt"] = net
+                except Exception:
+                    net = 200.0
+
+            target_usdt = base_usdt if base_usdt > 0 else max(floor_usd, frac * net)
+            order_usdt = max(target_usdt, buf * float(min_notional or 0.0))
+            order_usdt = float(f"{order_usdt:.2f}")
+            if order_usdt <= 0:
+                return
+
+            px = float(http_last_price(sym) or closes[-1] or 0.0)
+            try:
+                _, amount_digits, _, min_amount = _market_info(sym)
+            except Exception:
+                amount_digits, min_amount = None, 0.0
+
+            step_env = float(env_str("QTY_STEP") or 0.0)
+            step = (
+                (10.0 ** -(amount_digits or 0))
+                if (amount_digits is not None and amount_digits >= 0)
+                else (step_env if step_env > 0 else 1e-6)
+            )
+
+            est_qty = 0.0
+            if px > 0:
+                est_qty = step * math.floor((order_usdt / px) / step)
+
+            preview = {"calc_qty": est_qty, "calc_usdt": order_usdt, "calc_price": px}
+            _AUTOTRADE_STATE["per_symbol"][sym].update(preview)
+            try:
+                # on re-publie l’état pour que l’UI voie la qty
+                st = {**(_AUTOTRADE_STATE["per_symbol"][sym] or {}), **preview}
+                kv_set(f"AUTOTRADE_STATE:{sym}", json.dumps(st))
+            except Exception as e:
+                LOG_BUFFER.append(f"[state-kv-save-error] {e}")
+
+            ok, msg, _ = place_market_buy_usdt(sym, order_usdt)
+            LOG_BUFFER.append(f"AUTOTRADE {sym} BUY {order_usdt}USDT ({msg})")
+            if ok:
+                self.last_trade_ts[sym] = now
+                _AUTOTRADE_STATE["last_actions"] = (
+                    _AUTOTRADE_STATE.get("last_actions") or []
+                )[-29:] + [
+                    {
+                        "t": int(time.time() * 1000),
+                        "symbol": sym,
+                        "action": "buy",
+                        "price": closes[-1],
+                    }
+                ]
+                try:
+                    last = _AUTOTRADE_STATE["last_actions"][-1]
+                    kv_set("AUTOTRADE_LAST_ACTION", json.dumps(last))
+                    kv_set(f"AUTOTRADE_LAST_ACTION:{sym}", json.dumps(last))
+                except Exception as e:
+                    LOG_BUFFER.append(f"[last-action-save-error] {e}")
+
+        elif action == "sell":
+            held = float(self.get_qty_held(sym) or 0.0)
+            if held <= 0.0:
+                return
+
+            last = float(http_last_price(sym) or 0.0)
+            try:
+                _, amount_digits, min_notional, min_amount = _market_info(sym)
+            except Exception:
+                amount_digits, min_notional, min_amount = None, 0.0, 0.0
+
+            step_env = float(env_str("QTY_STEP") or 0.0)
+            step = (
+                (10.0 ** -(amount_digits or 0))
+                if (amount_digits is not None and amount_digits >= 0)
+                else (step_env if step_env > 0 else 1e-6)
+            )
+
+            min_qty_env = float(env_str("MIN_BASE_QTY") or 0.0)
+            min_qty = max(float(min_amount or 0.0), float(min_qty_env or 0.0))
+
+            qty_rounded = step * math.floor(held / step)
+
+            if (min_qty > 0 and abs(qty_rounded) < min_qty) or (
+                float(min_notional or 0.0) > 0
+                and last > 0
+                and abs(qty_rounded * last) < float(min_notional)
+            ):
+                LOG_BUFFER.append(
+                    f"AUTOTRADE {sym} SELL skipped: dust qty={qty_rounded} < min_qty={min_qty} "
+                    f"or notional={abs(qty_rounded*last):.6f} < min_cost={min_notional}"
+                )
+                return
+
+            ok, msg, _ = place_market_sell_qty(sym, qty_rounded)
+            LOG_BUFFER.append(f"AUTOTRADE {sym} SELL {qty_rounded} ({msg})")
+            if ok:
+                self.last_trade_ts[sym] = now
+                _AUTOTRADE_STATE["last_actions"] = (
+                    _AUTOTRADE_STATE.get("last_actions") or []
+                )[-29:] + [
+                    {
+                        "t": int(time.time() * 1000),
+                        "symbol": sym,
+                        "action": "sell",
+                        "price": closes[-1],
+                    }
+                ]
+                try:
+                    last = _AUTOTRADE_STATE["last_actions"][-1]
+                    kv_set("AUTOTRADE_LAST_ACTION", json.dumps(last))
+                    kv_set(f"AUTOTRADE_LAST_ACTION:{sym}", json.dumps(last))
+                except Exception as e:
+                    LOG_BUFFER.append(f"[last-action-save-error] {e}")
+
+    def run(self):
+        # assure que la boucle tournera
+        self.running = True
+        self.log(
+            f"AutoTrader loop started. mode={EXECUTION_MODE} testnet={BINANCE_TESTNET}"
+        )
+        _AUTOTRADE_STATE["start_ts"] = int(time.time() * 1000)
+        _AUTOTRADE_STATE["running"] = True
+
+        # initialiser la pause si absente (défaut = NON PAUSÉ)
+        try:
+            if kv_get("AUTO_TRADE_PAUSED") is None:
+                kv_set("AUTO_TRADE_PAUSED", "0")
+        except Exception as e:
+            LOG_BUFFER.append(f"[autotrade-init-pause] {e}")
+
+        while self.running:
+            loop_started = time.time()
+            try:
+                # défaut = False (sinon figé si clé absente)
+                if kv_get_bool("AUTO_TRADE_PAUSED", False):
+                    _AUTOTRADE_STATE["last_tick_ts"] = int(time.time() * 1000)
+                    time.sleep(1.0)
+                    continue
+
+                for sym in self.symbols:
+                    try:
+                        self.step_symbol(sym)
+                    except Exception as e:
+                        self.log(f"[step-error] {sym}: {e}")
+                    _AUTOTRADE_STATE["last_tick_ts"] = int(time.time() * 1000)
+                    time.sleep(0.1)
+
+            except Exception as e:
+                self.log(f"[loop-error] {e}")
+            finally:
+                _AUTOTRADE_STATE["last_tick_ts"] = int(time.time() * 1000)
+
+            elapsed = time.time() - loop_started
+            if elapsed < 0.05:
+                time.sleep(0.05 - elapsed)
+
+
+# --------------------------- Ingestors réels (fond) ---------------------------
+class NewsIngestor(threading.Thread):
+    def __init__(self, interval_sec=900):
+        super().__init__(daemon=True)
+        self.intv = interval_sec
+        self.running = True
+
+    def run(self):
+        token = env_str("CRYPTOPANIC_TOKEN")
+        newsapi = env_str("NEWSAPI_KEY")
+
+        if not token and not newsapi:
+            LOG_BUFFER.append("[NewsIngestor] aucune clé -> off")
+            return
+
+        LOG_BUFFER.append("[NewsIngestor] démarré")
+
+        while self.running:
+            try:
+                rows, rows_nw = [], []
+                now_ms = int(time.time() * 1000)
+
+                def add_news_row(
+                    sym: str, ts_ms: int, title: str, url: str, source: str
+                ):
+                    rows.append((sym, ts_ms, title, url, source))
+                    rows_nw.append(("nw", sym, ts_ms, float(tiny_polarity(title))))
+
+                # ---------- 1) CryptoPanic d'abord ----------
+                used_source = None
+                if token:
+                    try:
+                        for sym, kws in SYM_KEYWORDS.items():
+                            q = " OR ".join(kws)
+                            # 'public=true' évite certains 301 & contenus privés
+                            url = (
+                                "https://cryptopanic.com/api/v1/posts/"
+                                f"?auth_token={token}"
+                                f"&currencies={sym[:3].lower()}"
+                                f"&q={requests.utils.quote(q)}"
+                                f"&public=true"
+                            )
+                            r = _HTTP.get(
+                                url, timeout=8
+                            )  # requests suit les redirections par défaut
+                            if r.status_code == 429:
+                                LOG_BUFFER.append(
+                                    "[NewsIngestor] CryptoPanic 429 (quota) — fallback NewsAPI"
+                                )
+                                used_source = "newsapi_fallback"
+                                rows.clear()
+                                rows_nw.clear()
+                                break  # on stoppe la boucle CP, on passera à NewsAPI
+                            if not r.ok:
+                                LOG_BUFFER.append(
+                                    f"[NewsIngestor] CryptoPanic HTTP {r.status_code} — {r.text[:120]}"
+                                )
+                                used_source = "newsapi_fallback"
+                                rows.clear()
+                                rows_nw.clear()
+                                break
+
+                            js = r.json()
+                            for it in js.get("results") or []:
+                                title = (it.get("title") or "").strip()
+                                url2 = it.get("url") or ""
+                                # published_at_ts (sec) -> ms ; sinon 'published_at'
+                                ts_sec = it.get("published_at_ts")
+                                if ts_sec:
+                                    ts_ms = int(float(ts_sec) * 1000.0)
+                                else:
+                                    # published_at ISO → ms (best effort)
+                                    pa = (it.get("published_at") or "").replace(
+                                        "Z", "+00:00"
+                                    )
+                                    try:
+                                        ts_ms = int(
+                                            datetime.fromisoformat(pa).timestamp()
+                                            * 1000.0
+                                        )
+                                    except Exception:
+                                        ts_ms = now_ms
+                                add_news_row(sym, ts_ms, title, url2, "CryptoPanic")
+                        else:
+                            # si on n’a pas cassé la boucle (pas de 429/erreur), CryptoPanic est la source
+                            if rows:
+                                used_source = "cryptopanic"
+                    except Exception as e:
+                        LOG_BUFFER.append(f"[NewsIngestor] CryptoPanic err {e}")
+                        used_source = "newsapi_fallback"
+                        rows.clear()
+                        rows_nw.clear()
+
+                # ---------- 2) Fallback NewsAPI si besoin ----------
+                if (used_source in (None, "newsapi_fallback")) and newsapi:
+                    for sym, kws in SYM_KEYWORDS.items():
+                        q = " OR ".join(kws)
+                        url = (
+                            "https://newsapi.org/v2/everything?"
+                            f"q={requests.utils.quote(q)}"
+                            "&language=en&sortBy=publishedAt&pageSize=10"
+                            f"&apiKey={newsapi}"
+                        )
+                        r = _HTTP.get(url, timeout=8)
+                        if not r.ok:
+                            LOG_BUFFER.append(
+                                f"[NewsIngestor] NewsAPI HTTP {r.status_code} — {r.text[:120]}"
+                            )
+                            continue
+                        js = r.json()
+                        for a in js.get("articles") or []:
+                            title = (a.get("title") or "").strip()
+                            url2 = a.get("url") or ""
+                            pa = (
+                                a.get("publishedAt") or "1970-01-01T00:00:00+00:00"
+                            ).replace("Z", "+00:00")
+                            try:
+                                ts_ms = int(
+                                    datetime.fromisoformat(pa).timestamp() * 1000.0
+                                )
+                            except Exception:
+                                ts_ms = now_ms
+                            src = a.get("source", {}).get("name") or "newsapi"
+                            add_news_row(sym, ts_ms, title, url2, src)
+                    if rows:
+                        used_source = "newsapi"
+
+                # ---------- 3) Flush DB + logs ----------
+                if rows:
+                    _db_exec_many(
+                        rows,
+                        "INSERT INTO news(symbol,ts,title,url,source) VALUES(?,?,?,?,?)",
+                    )
+                if rows_nw:
+                    _db_exec_many(
+                        rows_nw,
+                        "INSERT INTO senti_points(source,symbol,ts,value) VALUES(?,?,?,?)",
+                    )
+
+                if rows or rows_nw:
+                    LOG_BUFFER.append(
+                        f"[NewsIngestor] source={used_source or 'none'}  +{len(rows)} actus, +{len(rows_nw)} nw"
+                    )
+                else:
+                    LOG_BUFFER.append("[NewsIngestor] aucune actu (tick)")
+
+            except Exception as e:
+                LOG_BUFFER.append(f"[NewsIngestor] err {e}")
+
+            time.sleep(self.intv)
+
+
+class TwitterIngestor(threading.Thread):
+    def __init__(self, interval_sec=300):
+        super().__init__(daemon=True)
+        self.intv = interval_sec
+        self.running = True
+
+    def _sleep(self, secs: float):
+        try:
+            secs = max(0.0, float(secs))
+        except Exception:
+            secs = 0.0
+        if secs > 0:
+            LOG_BUFFER.append(f"[TwitterIngestor] pause {secs:.1f}s")
+            time.sleep(secs)
+
+    def run(self):
+        bearer = env_str("TWITTER_BEARER_TOKEN") or env_str("TW_BEARER")
+        if not bearer:
+            LOG_BUFFER.append("[TwitterIngestor] pas de bearer -> off")
+            return
+
+        LOG_BUFFER.append("[TwitterIngestor] démarré")
+        headers = {"Authorization": f"Bearer {bearer}"}
+
+        # Cooldowns configurables (déjà présents dans ton .env / compose, sinon defaults)
+        rl_fallback = float(env_str("TW_RATE_LIMIT_COOLDOWN", "900") or 900)  # 15 min
+        auth_cool = float(env_str("TW_AUTH_ERROR_COOLDOWN", "3600") or 3600)  # 1 h
+        backoff = 5.0  # backoff (secondes) au départ pour les erreurs transitoires
+
+        while self.running:
+            try:
+                rows = []
+                end = int(time.time())
+                start = end - 15 * 60
+
+                for sym, kws in SYM_KEYWORDS.items():
+                    q = "(" + " OR ".join(kws) + ") -is:retweet -is:reply lang:en"
+                    params = {
+                        "query": q,
+                        "max_results": str(
+                            int(env_str("TWITTER_MAX_RESULTS", "50") or "50")
+                        ),
+                        "tweet.fields": "created_at,lang",
+                        "start_time": datetime.utcfromtimestamp(start).isoformat()
+                        + "Z",
+                        "end_time": datetime.utcfromtimestamp(end).isoformat() + "Z",
+                    }
+
+                    r = _HTTP.get(
+                        "https://api.twitter.com/2/tweets/search/recent",
+                        headers=headers,
+                        params=params,
+                        timeout=10,
+                    )
+
+                    # --- gestion des erreurs HTTP ---
+                    if r.status_code == 429:
+                        # d’abord essayer Retry-After (secondes), sinon x-rate-limit-reset (timestamp)
+                        retry_after = r.headers.get("retry-after")
+                        if retry_after is not None:
+                            try:
+                                wait = float(retry_after)
+                            except Exception:
+                                wait = rl_fallback
+                        else:
+                            reset = r.headers.get("x-rate-limit-reset")
+                            if reset:
+                                try:
+                                    # header reset est souvent epoch (seconds)
+                                    wait = max(0.0, float(reset) - time.time())
+                                except Exception:
+                                    wait = rl_fallback
+                            else:
+                                wait = rl_fallback
+                        LOG_BUFFER.append(
+                            f"[TwitterIngestor] 429 rate limit — sleep {wait:.1f}s"
+                        )
+                        self._sleep(wait)
+                        # on repart au symbole suivant après cooldown (et on brise la boucle for pour relancer la fenêtre)
+                        break
+
+                    if r.status_code in (401, 403):
+                        LOG_BUFFER.append(
+                            f"[TwitterIngestor] auth/refus ({r.status_code}) — cooldown {auth_cool:.0f}s"
+                        )
+                        self._sleep(auth_cool)
+                        break  # on ressort de la boucle des symboles pour relancer au prochain tick
+
+                    if not r.ok:
+                        LOG_BUFFER.append(
+                            f"[TwitterIngestor] HTTP {r.status_code} — {r.text[:120]}"
+                        )
+                        # backoff exponentiel léger sur erreurs diverses
+                        self._sleep(backoff)
+                        backoff = min(backoff * 2.0, 300.0)  # cap à 5 min
+                        continue
+                    else:
+                        backoff = 5.0  # reset backoff si ok
+
+                    js = r.json()
+                    for t in js.get("data") or []:
+                        if t.get("lang") != "en":
+                            continue
+                        score = tiny_polarity(t.get("text", ""))
+                        ts = int(
+                            datetime.fromisoformat(
+                                t["created_at"].replace("Z", "+00:00")
+                            ).timestamp()
+                            * 1000
+                        )
+                        rows.append(("tw", sym, ts, float(score)))
+
+                if rows:
+                    _db_exec_many(
+                        rows,
+                        "INSERT INTO senti_points(source,symbol,ts,value) VALUES(?,?,?,?)",
+                    )
+                    LOG_BUFFER.append(f"[TwitterIngestor] +{len(rows)} points")
+
+            except Exception as e:
+                LOG_BUFFER.append(f"[TwitterIngestor] err {e}")
+                # petit backoff en cas d’exception runtime
+                self._sleep(backoff)
+                backoff = min(backoff * 2.0, 300.0)
+
+            # attendre l’intervalle normal entre cycles (si pas déjà endormi pour 429)
+            self._sleep(self.intv)
+
+
+class RedditIngestor(threading.Thread):
+    def __init__(self, interval_sec=300):
+        super().__init__(daemon=True)
+        self.intv = interval_sec
+        self.running = True
+
+    def run(self):
+        cid = env_str("REDDIT_CLIENT_ID")
+        sec = env_str("REDDIT_CLIENT_SECRET")
+        user = env_str("REDDIT_USERNAME")
+        pwd = env_str("REDDIT_PASSWORD")
+        ua = env_str("REDDIT_USER_AGENT") or "bot/0.1"
+        subs = (env_str("REDDIT_SUBS") or "bitcoin,CryptoCurrency").split(",")
+        if not (cid and sec and user and pwd):
+            LOG_BUFFER.append("[RedditIngestor] creds manquantes -> off")
+            return
+        LOG_BUFFER.append("[RedditIngestor] démarré")
+        sess = requests.Session()
+        auth = requests.auth.HTTPBasicAuth(cid, sec)
+        data = {"grant_type": "password", "username": user, "password": pwd}
+        headers = {"User-Agent": ua}
+        try:
+            tok = sess.post(
+                "https://www.reddit.com/api/v1/access_token",
+                auth=auth,
+                data=data,
+                headers=headers,
+                timeout=10,
+            ).json()["access_token"]
+        except Exception:
+            LOG_BUFFER.append("[RedditIngestor] auth KO")
+            return
+        headers["Authorization"] = f"Bearer {tok}"
+        while self.running:
+            try:
+                rows = []
+                for sub in subs:
+                    r = sess.get(
+                        f"https://oauth.reddit.com/r/{sub}/new?limit=50",
+                        headers=headers,
+                        timeout=10,
+                    )
+                    if not r.ok:
+                        continue
+                    js = r.json()
+                    for p in js.get("data", {}).get("children") or []:
+                        d = p.get("data", {})
+                        title = d.get("title", "")
+                        body = d.get("selftext", "")
+                        text = f"{title} {body}"
+                        ts = int(float(d.get("created_utc", 0)) * 1000)
+                        low = text.lower()
+                        for sym, kws in SYM_KEYWORDS.items():
+                            if any(kw in low for kw in kws):
+                                score = tiny_polarity(text)
+                                rows.append(("rd", sym, ts, float(score)))
+                if rows:
+                    _db_exec_many(
+                        rows,
+                        "INSERT INTO senti_points(source,symbol,ts,value) VALUES(?,?,?,?)",
+                    )
+                    LOG_BUFFER.append(f"[RedditIngestor] +{len(rows)} points")
+            except Exception as e:
+                LOG_BUFFER.append(f"[RedditIngestor] err {e}")
+            time.sleep(self.intv)
+
+
+class TrendsIngestor(threading.Thread):
+    def __init__(self, interval_sec=3600):
+        super().__init__(daemon=True)
+        self.intv = interval_sec
+        self.running = True
+
+    def run(self):
+# [MOVED TRY-IMPORT]         try:
+# [MOVED TRY-IMPORT]             from pytrends.request import TrendReq
+# [MOVED TRY-IMPORT]         except Exception:
+# [MOVED TRY-IMPORT]             LOG_BUFFER.append("[TrendsIngestor] pytrends non installé -> off")
+# [MOVED TRY-IMPORT]             return
+        LOG_BUFFER.append("[TrendsIngestor] démarré")
+        tr = TrendReq(hl="en-US", tz=0)
+        while self.running:
+            try:
+                rows = []
+                for sym, kws in SYM_KEYWORDS.items():
+                    kw = kws[0]
+                    tr.build_payload([kw], timeframe="now 7-d", geo="")
+                    df = tr.interest_over_time()
+                    if df is None or df.empty:
+                        continue
+                    for idx, val in df[kw].items():
+                        ts = int(idx.to_pydatetime().timestamp() * 1000)
+                        rows.append(("tr", sym, ts, float(val)))
+                if rows:
+                    _db_exec_many(
+                        rows,
+                        "INSERT INTO senti_points(source,symbol,ts,value) VALUES(?,?,?,?)",
+                    )
+                    LOG_BUFFER.append(f"[TrendsIngestor] +{len(rows)} points")
+            except Exception as e:
+                LOG_BUFFER.append(f"[TrendsIngestor] err {e}")
+            time.sleep(self.intv)
+
+
+# ------------------------------ Boot ------------------------------------------
+ensure_schema()
+LOG_BUFFER.append(
+    f"[{datetime.now().isoformat(timespec='seconds')}] Backend démarré. DB={DB_PATH}"
+)
+
+# Prépare ccxt si demandé
+if EXECUTION_MODE == "ccxt" and ccxt is not None:
+    try:
+        get_exchange()
+    except Exception as e:
+        LOG_BUFFER.append(f"[ERR] ccxt init: {e}")
+
+# Lance l'autotrader (démarre en pause si AUTO_TRADE_PAUSED=1)
+start_background_loops_once()
+
+# Lancer les ingestors si clés présentes
+try:
+    if env_str("CRYPTOPANIC_TOKEN") or env_str("NEWSAPI_KEY"):
+        NewsIngestor().start()
+    if env_str("TWITTER_BEARER_TOKEN") or env_str("TW_BEARER"):
+        TwitterIngestor().start()
+    if (
+        env_str("REDDIT_CLIENT_ID")
+        and env_str("REDDIT_CLIENT_SECRET")
+        and env_str("REDDIT_USERNAME")
+        and env_str("REDDIT_PASSWORD")
+    ):
+        RedditIngestor().start()
+    # Trends facultatif (tentera et se désactivera si non installé)
+    TrendsIngestor().start()
+except Exception as e:
+    LOG_BUFFER.append(f"[ingestors] start error: {e}")
+
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+_INDEX_CANDIDATES = [
+    "index.html",
+    "frontend/index.html",
+    "static/index.html",
+    "templates/index.html",
+]
+
+
+@app.get("/")
+def root_index():
+    """root_index: endpoint auto-documenté.
+    
+    Routes:
+    - GET /
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/"
+    """
+    for rel in _INDEX_CANDIDATES:
+        fp = os.path.join(APP_DIR, rel)
+        if os.path.exists(fp):
+            return send_file(fp, mimetype="text/html")
+    return (
+        "<!doctype html><meta charset='utf-8'>"
+        "<h1>Backend OK</h1>"
+        "<p>Aucun <code>index.html</code> trouvé dans le conteneur.</p>"
+        "<p>Copie-le dans <code>/app/index.html</code> (ou /app/frontend/…)</p>",
+        200,
+        {"Content-Type": "text/html; charset=utf-8"},
+    )
+
+
+@app.get("/favicon.ico")
+def favicon():
+    """favicon: endpoint auto-documenté.
+    
+    Routes:
+    - GET /favicon.ico
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/favicon.ico"
+    """
+    return ("", 204)
+
+
+@app.get("/<path:fname>")
+def serve_static_loose(fname):
+    """serve_static_loose: endpoint auto-documenté.
+    
+    Routes:
+    - GET /<path:fname>
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/<path:fname>"
+    """
+    if fname.startswith("api/"):
+        abort(404)
+    fp = os.path.join(APP_DIR, fname)
+    if os.path.isfile(fp):
+        return send_file(fp)
+    abort(404)
+
+
+# === MERGE START (from oldapp.py) ===
+# NOTE: Functions below were missing in app.py and appended from oldapp.py.
+# Extra imports needed by merged functions
+# [MOVED IMPORT] from datetime import datetime, timezone, date
+# [MOVED IMPORT] from dotenv import load_dotenv
+# [MOVED IMPORT] from flask import Flask, jsonify, render_template, request, abort
+# [MOVED IMPORT] from sentiment_sources import get_sentiment_features, ingest_twitter_texts
+# [MOVED IMPORT] from tri_patch import apply_trade_patch, train_mc_once
+# [MOVED IMPORT] from typing import Any, Dict, List, Optional, Iterable, Union
+# [MOVED IMPORT] import json, math
+# [MOVED IMPORT] import logging
+# [MOVED IMPORT] import os, re, json, time, math, random, sqlite3, statistics, threading
+# [MOVED IMPORT] import sqlite3
+# [MOVED IMPORT] import threading
+
+
+def now_ts() -> float:
+    return time.time()
+
+
+def _binance_klines(symbol, interval="1m", limit=60):
+    if not requests:
+        raise RuntimeError("requests indisponible")
+    sym = symbol.upper().replace("/", "")
+    r = _HTTP.get(
+        "https://api.binance.com/api/v3/klines",
+        params={"symbol": sym, "interval": interval, "limit": limit},
+        timeout=5,
+    )
+    r.raise_for_status()
+    js = r.json()
+    return [float(x[4]) for x in js]
+
+
+def _parse_window(w):
+    try:
+        w = str(w).strip().lower()
+        if w.endswith("m"):
+            return int(w[:-1])
+        if w.endswith("h"):
+            return int(w[:-1]) * 60
+        if w.endswith("d"):
+            return int(w[:-1]) * 24 * 60
+        return int(w)  # minutes
+    except Exception:
+        return 24 * 60
+
+
+def _db_safe():
+    try:
+        return get_db()
+    except Exception:
+        try:
+            return _db()
+        except Exception as e:
+            raise RuntimeError("no DB handle (get_db/_db missing)") from e
+
+
+def _binance_http_last_price(symbol):
+    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+    r = _HTTP.get(url, timeout=5)
+    r.raise_for_status()
+    js = r.json()
+    return float(js["price"])
+
+    # 2b) Fallback HTTP Binance par symbole (si WS/ccxt n'ont rien donné)
+    try:
+        http_px = _binance_http_last_price(symbol)
+    except Exception:
+        http_px = None
+
+    if http_px is not None:
+        bid = http_px * (1 - 0.0005)
+        ask = http_px * (1 + 0.0005)
+        mid = http_px
+        spread_bps = (ask - bid) / mid * 10000.0
+        try:
+            _feed_price(mid, source="http")  # ok si la fonction existe, sinon ignore
+        except Exception:
+            pass
+        return jsonify(
+            ok=True,
+            source="http",
+            symbol=symbol,
+            ts=int(time.time() * 1000),
+            last=http_px,
+            bid=bid,
+            ask=ask,
+            mid=mid,
+            spread_bps=spread_bps,
+        )
+
+
+def _ccxt_last_price(symbol: str):
+    try:
+        if "ccxt" in globals() and ccxt is not None:
+            market = f"{symbol[:3]}/{symbol[3:]}" if "/" not in symbol else symbol
+            ex = ccxt.binance(
+                {"enableRateLimit": True, "options": {"adjustForTimeDifference": True}}
+            )
+            t = ex.fetch_ticker(market)
+            # priorité: last, sinon close, sinon mid
+            last = t.get("last") or t.get("close")
+            if last is None and t.get("bid") and t.get("ask"):
+                last = (float(t["bid"]) + float(t["ask"])) / 2.0
+            return None if last is None else float(last)
+    except Exception:
+        pass
+    return None
+
+
+def _last_price(symbol: str):
+    # essaie ccxt, sinon HTTP binance
+    px = _ccxt_last_price(symbol)
+    if px is not None:
+        return px
+    return _binance_http_last_price(symbol)
+
+
+def _last_prices_from_db(symbols):
+    # lit les derniers prix de snapshots2 (si dispo)
+    px = {}
+    try:
+        conn = _db_safe()
+        c = conn.cursor()
+        for s in symbols:
+            try:
+                row = c.execute(
+                    "SELECT price FROM snapshots2 WHERE symbol=? AND price IS NOT NULL ORDER BY ts DESC LIMIT 1",
+                    (s,),
+                ).fetchone()
+                if row and row[0] is not None:
+                    px[s] = float(row[0])
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return px
+
+
+def _portfolio_summary_impl():
+    conn = _db_safe()
+    c = conn.cursor()
+    cash = 200
+    pos = defaultdict(float)
+    have_trades2 = False
+
+    # 1) lire les trades
+    try:
+        rows = c.execute(
+            "SELECT symbol, ts, side, price, qty, fee FROM trades2 ORDER BY ts ASC"
+        ).fetchall()
+        have_trades2 = True
+    except Exception:
+        rows = c.execute(
+            "SELECT ts, side, price, qty, fee FROM trades ORDER BY ts ASC"
+        ).fetchall()
+
+    # 2) agréger cash/positions
+    if have_trades2:
+        for sym, ts, side, price, qty, fee in rows:
+            sym = (sym or "BTCUSDT").upper()
+            s = (side or "").lower()
+            p = float(price or 0.0)
+            q = float(qty or 0.0)
+            f = float(fee or 0.0)
+            if s == "buy":
+                cash -= p * q + f
+                pos[sym] += q
+            elif s == "sell":
+                cash += p * q - f
+                pos[sym] -= q
+    else:
+        base = (os.getenv("SYMBOL", "BTC/USDT").replace("/", "")).upper()
+        for ts, side, price, qty, fee in rows:
+            s = (side or "").lower()
+            p = float(price or 0.0)
+            q = float(qty or 0.0)
+            f = float(fee or 0.0)
+            if s == "buy":
+                cash -= p * q + f
+                pos[base] += q
+            elif s == "sell":
+                cash += p * q - f
+                pos[base] -= q
+
+    # 3) derniers prix
+    syms_needed = sorted(set(list(pos.keys()) + SYMBOLS))
+    pxs = _last_prices_from_db(syms_needed)
+    for s in syms_needed:
+        if s not in pxs:
+            p = _last_price(s)
+            if p is not None:
+                pxs[s] = p
+
+    # 4) net / positions détaillées
+    net = cash
+    positions = []
+    for s in sorted(pos.keys()):
+        last = float(pxs.get(s, 0.0))
+        qty = float(pos[s])
+        positions.append({"symbol": s, "qty": qty, "last": last})
+        net += qty * last
+
+    return (
+        jsonify(
+            {
+                "ok": True,
+                "symbols": SYMBOLS,
+                "cash_usdt": float(cash),
+                "positions": positions,
+                "net_value_usdt": float(net),
+            }
+        ),
+        200,
+    )
+
+
+def _strategy_presets_impl():
+    return jsonify({"ok": True, "presets": _STRAT_PRESETS}), 200
+
+
+def _strategy_apply_impl():
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+    except Exception:
+        body = {}
+
+    symbol = (body.get("symbol") or "").upper() or "BTCUSDT"
+    preset = (body.get("preset") or body.get("key") or "").strip() or "balanced"
+
+    # (optionnel) persistance clé/valeur si tu as kv_set/kv_get
+# [MOVED TRY-IMPORT]     try:
+# [MOVED TRY-IMPORT]         # kv_set(f"PRESET_{symbol}", preset)
+# [MOVED TRY-IMPORT]         pass
+# [MOVED TRY-IMPORT]     except Exception:
+# [MOVED TRY-IMPORT]         pass
+
+    _LAST_PRESET_BY_SYMBOL[symbol] = preset
+    return (
+        jsonify(
+            {
+                "ok": True,
+                "symbol": symbol,
+                "preset": preset,
+                "message": "Preset appliqué.",
+            }
+        ),
+        200,
+    )
+
+
+def _kv_get_bool(key, default=False):
+    try:
+        return bool(kv_get_bool(key, default))
+    except Exception:
+        return bool(default)
+
+
+def _kv_set_bool(key, val: bool):
+    try:
+        kv_set(key, "1" if val else "0")
+    except Exception:
+        pass
+
+
+def _get_paused():
+    # Source de vérité: KV si dispo, sinon mémoire
+    p = _kv_get_bool("AUTO_TRADE_PAUSED", _AUTOTRADE_STATE.get("paused", False))
+    _AUTOTRADE_STATE["paused"] = bool(p)
+    _AUTOTRADE_STATE["status"] = "paused" if p else "running"
+    return bool(p)
+
+
+def _set_paused(v: bool):
+    _kv_set_bool("AUTO_TRADE_PAUSED", bool(v))
+    _AUTOTRADE_STATE["paused"] = bool(v)
+    _AUTOTRADE_STATE["status"] = "paused" if v else "running"
+    _AUTOTRADE_STATE["last_ts"] = int(time.time() * 1000)
+
+
+def _note_trade(symbol, side, price, qty, trade_id=None, reason=None, extra=None):
+    """Append a light trade event to in-memory telemetry for the UI."""
+    try:
+        ts = int(time.time() * 1000)
+        ent = {
+            "ts": ts,
+            "symbol": str(symbol),
+            "side": str(side).upper(),
+            "price": float(price or 0.0),
+            "qty": float(qty or 0.0),
+        }
+        if trade_id is not None:
+            ent["id"] = int(trade_id)
+        if reason:
+            ent["reason"] = str(reason)
+        if isinstance(extra, dict):
+            for k, v in extra.items():
+                if k not in ent:
+                    ent[k] = v
+        la = _AUTOTRADE_STATE.setdefault("last_actions", [])
+        la.insert(0, ent)
+        if len(la) > 100:
+            del la[100:]
+        _AUTOTRADE_STATE["last_ts"] = ts
+    except Exception as _e:
+        try:
+            app.logger.warning(f"_note_trade failed: {_e}")
+        except Exception:
+            pass
+
+
+def set_price(px: float, source: str = "market"):
+    """Met à jour le prix + delta/direction + horodatage."""
+    global LAST_TICK_TS
+    try:
+        px = float(px)
+    except Exception:
+        return
+    prev = float(STATE.get("price") or 0.0)
+    if prev == 0.0:
+        # première valeur: prev=px pour éviter un gros delta au 1er tick
+        prev = px
+    STATE["price_prev"] = prev
+    STATE["price"] = px
+    STATE["price_chg"] = px - prev
+    LAST_TICK_TS = time.time()
+    try:
+        PRICE_RING.append(px)
+    except Exception:
+        pass
+
+
+def _ensure_meta_json_column():
+    conn = None
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        cols = [row[1] for row in c.execute("PRAGMA table_info(decision_trace)")]
+        if "meta_json" not in cols:
+            c.execute("ALTER TABLE decision_trace ADD COLUMN meta_json TEXT")
+            conn.commit()
+    except Exception:
+        # on ignore l’erreur "duplicate column name" si déjà ajouté ailleurs
+        pass
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+def _maybe_refresh_price(force: bool = False):
+    """Rafraîchit le prix si trop vieux / invalide (ou force=True)."""
+    global LAST_TICK_TS
+    try:
+        max_age = int(_PARAMS.get("MAX_TICK_AGE_S", 60))
+    except Exception:
+        max_age = 60
+    now = time.time()
+    age = now - (LAST_TICK_TS or 0)
+    curr = float(STATE.get("price") or 0.0)
+
+    need = (
+        force
+        or (LAST_TICK_TS is None)
+        or (age > max_age)
+        or (curr <= 0.0)
+        or (abs(curr - 30000.0) < 1e-9)
+    )
+    if not need:
+        return
+
+    px = float(get_latest_price() or 0.0)
+    if px > 0.0:
+        set_price(px, source="refresh")
+    try:
+        s0 = get_account_snapshot_safe()
+        if s0 and ("cash" in s0) and ("btc" in s0):
+            snapshot_now()
+    except Exception:
+        pass
+
+
+def _hydrate_price_on_boot():
+    """Au boot: essaie dernier snapshot; sinon fetch live."""
+    try:
+        row = None
+        try:
+            row = _query_one(
+                """
+                SELECT CAST(price AS REAL) AS price
+                FROM snapshots
+                ORDER BY (CASE WHEN ts>1e11 THEN ts/1000.0 ELSE ts END) DESC
+                LIMIT 1
+            """
+            )
+        except NameError:
+            rows = _q(
+                """
+                SELECT CAST(price AS REAL) AS price
+                FROM snapshots
+                ORDER BY (CASE WHEN ts>1e11 THEN ts/1000.0 ELSE ts END) DESC
+                LIMIT 1
+            """
+            )
+            row = rows[0] if rows else None
+
+        px = float((row or {}).get("price") or 0.0)
+        if px > 0.0:
+            set_price(px, source="boot_snapshot")
+        else:
+            _maybe_refresh_price(force=True)
+    except Exception:
+        # quoi qu'il arrive, tente un fetch live
+        _maybe_refresh_price(force=True)
+
+
+def _estimate_exit_cost_pct(params: dict) -> float:
+    """
+    Coût estimé pour sortir la position actuelle (une jambe SELL):
+    (frais de trading + autres coûts + buffer) + slippage.
+    """
+    prefer_maker = bool(params.get("PREFER_MAKER", True))
+    maker_bps = float(params.get("COST_MAKER_BPS", 2.0))
+    taker_bps = float(params.get("COST_TAKER_BPS", 5.0))
+    other_bps = float(params.get("OTHER_COST_BPS", 2.0))
+    fee_buffer_bps = float(params.get("FEE_BUFFER_BPS", 5.0))
+    slippage = float(params.get("SLIPPAGE", 0.0))
+
+    trade_leg_bps = maker_bps if prefer_maker else taker_bps
+    exit_pct = (trade_leg_bps + other_bps + fee_buffer_bps) / 10000.0 + slippage
+    return max(0.0, exit_pct)
+
+
+def http_price_binance(sym="BTCUSDT", timeout=2.5):
+    try:
+        s = sym.replace("/", "")
+        r = _HTTP.get(
+            f"https://api.binance.com/api/v3/ticker/price?symbol={s}", timeout=timeout
+        )
+        return float(r.json()["price"])
+    except Exception:
+        return None
+
+
+def http_price_coinbase(sym="BTC-USD", timeout=2.5):
+    try:
+        s = sym.replace("/", "-")
+        if not s.endswith("-USD"):
+            s = "BTC-USD"
+        r = _HTTP.get(
+            f"https://api.exchange.coinbase.com/products/{s}/ticker",
+            timeout=timeout,
+            headers={"User-Agent": "bot"},
+        )
+        return float(r.json().get("price") or r.json().get("last"))
+    except Exception:
+        return None
+
+
+def http_price_any(symbol=None):
+    sym = _symbol_norm(
+        (symbol or os.environ.get("SYMBOL") or "BTCUSDT").replace("/", "").upper()
+    )
+    # Essaie plusieurs sources HTTP simples
+    s1 = (symbol or sym).replace("/", "")
+    s2 = (symbol or sym).replace("/", "-")
+    for fn, arg in [(http_price_binance, s1), (http_price_coinbase, s2)]:
+        px = fn(arg)
+        if px and px > 0:
+            return float(px)
+    return None
+
+
+def _bootstrap_once_and_keep_fresh():
+    """Effectue les init 'une fois' puis maintient le prix frais à chaque requête."""
+    global MIGRATIONS_DONE, BOOT_PRICE_HYDRATED
+
+    # 1) Migration DB (ajout de meta_json) — une seule fois
+    if not MIGRATIONS_DONE:
+        try:
+            _ensure_meta_json_column()
+        except Exception as e:
+            try:
+                app.logger.warning(f"Migration meta_json ignorée: {e}")
+            except Exception:
+                pass
+        MIGRATIONS_DONE = True
+
+    # 2) Hydrater le prix au démarrage — une seule fois
+    if not BOOT_PRICE_HYDRATED:
+        try:
+            _hydrate_price_on_boot()
+        except Exception as e:
+            try:
+                app.logger.warning(f"Hydrate price on boot: {e}")
+            except Exception:
+                pass
+        BOOT_PRICE_HYDRATED = True
+
+    # 3) Démarrer l’engine si demandé (idempotent)
+    try:
+        if os.getenv("ENGINE_AUTOSTART", "1") == "1":
+            _start_engine_once()
+    except Exception as e:
+        try:
+            app.logger.warning(f"Engine autostart: {e}")
+        except Exception:
+            pass
+
+    # 4) Rafraîchir le prix si nécessaire (léger, peut être appelé à chaque requête)
+    try:
+        _maybe_refresh_price(force=False)
+    except Exception as e:
+        try:
+            app.logger.debug(f"_maybe_refresh_price: {e}")
+        except Exception:
+            pass
+
+
+def _json_errors(e):
+    app.logger.exception("Unhandled exception")
+    code = getattr(e, "code", 500)
+    msg = str(e)
+    return jsonify({"ok": False, "error": msg, "code": code}), code
+
+
+def ml_total_qty() -> float:
+    with POS_LOCK:
+        return sum(float(l.get("qty") or 0.0) for l in POSITIONS)
+
+
+def ml_add_lot(
+    qty: float,
+    entry_px: float,
+    tp_pct: float,
+    sl_pct: float,
+    arm_id: Optional[str] = None,
+):
+    """Crée un lot indépendant avec ses propres cibles/trailing et retourne son id (int)."""
+    if qty <= 0.0 or entry_px <= 0.0:
+        return None
+    global LOT_SEQ
+    with POS_LOCK:
+        LOT_SEQ += 1
+        lot = {
+            "id": LOT_SEQ,  # <-- id entier et stable
+            "entry": float(entry_px),
+            "qty": float(qty),
+            "opened_at": time.time(),
+            "peak": float(entry_px),
+            "tp_pct": float(tp_pct),
+            "sl_pct": float(sl_pct),
+            "arm_id": arm_id,
+            "partial_done": False,
+            "partial_last_ts": 0.0,
+        }
+        POSITIONS.append(lot)
+
+    # compatibilité avec l’existant
+    STATE["in_position"] = True
+    STATE["entries_count"] = 1 + int(STATE.get("entries_count") or 0)
+    STATE["last_entry_price"] = float(entry_px)
+    return lot["id"]
+
+
+def ml_tick(price: float, p_up: float):
+    """
+    Évalue chaque lot et vend:
+      - en mode STRICT_PROFIT_LOSS_ONLY: uniquement si
+           • pnl_pct >= must_cover + PROFIT_SELL_MIN_PCT  (profit net >= +3%)
+           • pnl_pct <= -(must_cover + LOSS_HARD_SL_PCT)  (perte nette <= -5%)
+      - sinon: logique complète (TP/SL/BE/hystérésis/time), plus take-partial si activé.
+    Exécute 1 seule vente agrégée et enregistre une trace par lot.
+    """
+    if price <= 0:
+        return {"closed": 0, "partials": 0}
+
+    now = time.time()
+
+    # ---- coût total estimé (frais + 2*slippage + buffer) ----
+    cs = _costs_snapshot()
+    must_cover = float(cs.get("total", 0.0))
+
+    # ---- lecture des paramètres ----
+    strict = bool(_PARAMS.get("STRICT_PROFIT_LOSS_ONLY", True))
+    prof_min = float(_PARAMS.get("PROFIT_SELL_MIN_PCT", 0.03))
+    loss_hard = float(_PARAMS.get("LOSS_HARD_SL_PCT", 0.05))
+
+    # seuils nets
+    profit_threshold = must_cover + prof_min
+    loss_threshold = must_cover + loss_hard
+
+    # (utilisés si strict=False)
+    trail_to_be = float(_PARAMS.get("TRAIL_TO_BREAKEVEN_PCT", 0.004))
+    be_min_hold = int(_PARAMS.get("BE_MIN_HOLD_SEC", 120))
+    be_trail_back = float(_PARAMS.get("BE_TRAIL_BACK_PCT", 0.003))
+    time_stop_min = int(_PARAMS.get("TIME_STOP_MIN", 0))
+    hys = float(_PARAMS.get("HYS_PCT", 0.015))
+    psell = float(_PARAMS.get("PSELL", 0.40))
+
+    # take-partial (ne fera rien si TAKE_PARTIAL_AT_PCT==0.0)
+    take_at = float(_PARAMS.get("TAKE_PARTIAL_AT_PCT", 0.0))
+    take_pct = float(_PARAMS.get("TAKE_PARTIAL_PCT", 0.33))
+    part_min_hold = int(_PARAMS.get("PARTIAL_MIN_HOLD_SEC", 60))
+    part_min_not = float(_PARAMS.get("PARTIAL_MIN_NOTIONAL", 10.0))
+    allow_multiple = bool(_PARAMS.get("PARTIAL_ALLOW_MULTIPLE", False))
+    partial_cooldown = int(_PARAMS.get("PARTIAL_COOLDOWN_SEC", 0))
+
+    closed_full = []  # [(lot, reason, pnl_pct)]
+    partials = []  # [(lot, q_part, pnl_pct)]
+    total_qty_to_sell = 0.0
+
+    with POS_LOCK:
+        for lot in list(POSITIONS):
+            ent = float(lot.get("entry") or price)
+            qty = float(lot.get("qty") or 0.0)
+            tp = float(lot.get("tp_pct") or 0.0)
+            sl = float(lot.get("sl_pct") or 0.0)
+            age = now - float(lot.get("opened_at") or now)
+            if qty <= 0.0:
+                continue
+
+            # peak
+            lot_peak = max(float(lot.get("peak") or price), price)
+            lot["peak"] = lot_peak
+
+            pnl_pct = (price - ent) / max(ent, 1e-9)
+
+            # ----------------------------
+            #  MODE STRICT: seulement 2 règles
+            # ----------------------------
+            if strict:
+                if pnl_pct >= max(tp, profit_threshold):
+                    closed_full.append((lot, "tp", pnl_pct))
+                    total_qty_to_sell += qty
+                    continue
+                if pnl_pct <= -max(sl, loss_threshold):
+                    closed_full.append((lot, "sl", pnl_pct))
+                    total_qty_to_sell += qty
+                    continue
+
+                # en mode strict, on ignore BE / hys / time / partials
+                continue
+
+            # --------------------------------------
+            #  MODE COMPLET (strict=False): logique existante
+            # --------------------------------------
+
+            # SL classique
+            if price <= ent * (1.0 - sl):
+                closed_full.append((lot, "sl", pnl_pct))
+                total_qty_to_sell += qty
+                continue
+
+            # TP classique
+            if price >= ent * (1.0 + tp):
+                closed_full.append((lot, "tp", pnl_pct))
+                total_qty_to_sell += qty
+                continue
+
+            # BE conservateur
+            if (
+                pnl_pct >= trail_to_be
+                and age >= be_min_hold
+                and price <= lot_peak * (1.0 - be_trail_back)
+                and pnl_pct >= must_cover
+                and price <= ent
+            ):
+                closed_full.append((lot, "be", pnl_pct))
+                total_qty_to_sell += qty
+                continue
+
+            # Hystérésis vendeuse
+            if (p_up <= (psell - hys)) and (
+                age >= int(_PARAMS.get("MIN_HOLD_SEC", 120))
+            ):
+                if pnl_pct >= must_cover:
+                    closed_full.append((lot, "hys", pnl_pct))
+                    total_qty_to_sell += qty
+                    continue
+
+            # Time stop
+            if time_stop_min > 0 and age >= 60 * time_stop_min:
+                closed_full.append((lot, "time", pnl_pct))
+                total_qty_to_sell += qty
+                continue
+
+            # Take-partial
+            if take_at > 0.0 and take_pct > 0.0:
+                notional = qty * float(price or 0.0)
+                eligible = (
+                    age >= part_min_hold
+                    and pnl_pct >= take_at
+                    and notional >= part_min_not
+                )
+                if eligible:
+                    if not allow_multiple:
+                        eligible = not bool(lot.get("partial_done"))
+                    else:
+                        last_ts = float(lot.get("partial_last_ts") or 0.0)
+                        eligible = (now - last_ts) >= max(0, partial_cooldown)
+                if eligible:
+                    q_part = max(0.0, min(qty * take_pct, qty))
+                    if q_part > 1e-12:
+                        partials.append((lot, q_part, pnl_pct))
+                        total_qty_to_sell += q_part
+
+    # rien à faire
+    if total_qty_to_sell <= 0.0:
+        return {"closed": 0, "partials": 0}
+
+    # --- exécution unique: vente agrégée ---
+    ret = _paper_sell(total_qty_to_sell)  # (qty, px, fee[, pnl])
+    qty_sold = float(ret[0] if isinstance(ret, (list, tuple)) and len(ret) > 0 else 0.0)
+    px = float(ret[1] if isinstance(ret, (list, tuple)) and len(ret) > 1 else price)
+    fee = float(ret[2] if isinstance(ret, (list, tuple)) and len(ret) > 2 else 0.0)
+    if qty_sold <= 0.0 or px <= 0.0:
+        return {"closed": 0, "partials": 0}
+
+    pnl_total = 0.0
+    with POS_LOCK:
+        ids_closed = set()
+
+        # lots fermés entièrement
+        for lot, reason, pnl_pct in closed_full:
+            q = float(lot.get("qty") or 0.0)
+            if q <= 0.0:
+                continue
+            part_fee = fee * (q / max(qty_sold, 1e-9))
+            pnl_val = (px - float(lot.get("entry") or px)) * q - part_fee
+            pnl_total += pnl_val
+            ids_closed.add(lot["id"])
+
+            _record_trace(
+                reason,
+                px,
+                q,
+                float(STATE.get("p_up", 0.5)),
+                float(STATE.get("ev", 0.0)),
+                {
+                    "pnl_pct": float(pnl_pct),
+                    "lot_id": (
+                        int(lot["id"]) if isinstance(lot["id"], int) else lot["id"]
+                    ),
+                    "exec": (
+                        "strict_profit"
+                        if (reason == "tp" and strict)
+                        else (
+                            "strict_loss"
+                            if (reason == "sl" and strict)
+                            else f"ml_exit:{reason}"
+                        )
+                    ),
+                },
+            )
+            if lot.get("arm_id"):
+                try:
+                    bandit_update_reward(lot["arm_id"], float(pnl_val))
+                except Exception:
+                    pass
+            try:
+                risk_on_trade_result(float(pnl_val))
+            except Exception:
+                pass
+
+        # sorties partielles (actives seulement si strict=False et take_at>0)
+        for lot, q_part, pnl_pct in partials:
+            q = float(q_part or 0.0)
+            if q <= 0.0:
+                continue
+            part_fee = fee * (q / max(qty_sold, 1e-9))
+            pnl_val = (px - float(lot.get("entry") or px)) * q - part_fee
+            pnl_total += pnl_val
+
+            lot["qty"] = max(0.0, float(lot.get("qty") or 0.0) - q)
+            lot["partial_done"] = True
+            lot["partial_last_ts"] = now
+
+            _record_trace(
+                "tp_partial",
+                px,
+                q,
+                float(STATE.get("p_up", 0.5)),
+                float(STATE.get("ev", 0.0)),
+                {
+                    "pnl_pct": float(pnl_pct),
+                    "lot_id": (
+                        int(lot["id"]) if isinstance(lot["id"], int) else lot["id"]
+                    ),
+                    "exec": "ml_exit:partial",
+                },
+            )
+            if lot.get("arm_id"):
+                try:
+                    bandit_update_reward(lot["arm_id"], float(pnl_val))
+                except Exception:
+                    pass
+            try:
+                risk_on_trade_result(float(pnl_val))
+            except Exception:
+                pass
+
+        # purge des lots totalement fermés
+        if ids_closed:
+            remain = [l for l in POSITIONS if l["id"] not in ids_closed]
+            POSITIONS.clear()
+            POSITIONS.extend(remain)
+
+        STATE["in_position"] = len(POSITIONS) > 0
+
+    # tirelire de réinvestissement
+    reinv_pct = float(_PARAMS.get("REINVEST_PCT_OF_PROFIT", 0.5))
+    add = max(0.0, pnl_total) * max(0.0, min(1.0, reinv_pct))
+    globals()["REINVEST_POOL"] = float(globals().get("REINVEST_POOL", 0.0) + add)
+
+    return {"closed": len(closed_full), "partials": len(partials)}
+
+
+def api_twitter_ingest():
+# [MOVED IMPORT]     from sentiment_sources import ingest_twitter_texts
+
+    texts = (request.json or {}).get("texts") or []
+    feats = ingest_twitter_texts([str(t) for t in texts])
+    return {"ok": True, "features": feats}, 200
+
+
+def set_params():
+    """
+    Définit les paramètres d'auto-trade.
+    - mode: "learning" | "normal"
+    - preset: "aggressive" | "neutral" | "safe" | "scalper_1pc" (optionnel en mode normal)
+    - params: { ... }  (overrides fins, optionnels)
+    Persistance dans KV: AUTOTRADE_MODE, AUTOTRADE_PRESET, AUTOTRADE_PARAMS
+    """
+    global LEARNING_MODE, _PARAMS
+
+    data = request.get_json(silent=True) or {}
+    mode = (data.get("mode") or "normal").lower()
+    preset = (data.get("preset") or "").lower()
+    overrides = data.get("params") or {}
+
+    # Presets
+    PRESETS = {
+        "aggressive": {
+            "PBUY": 0.58,
+            "PSELL": 0.42,
+            "MIN_EV_NET": 0.0000,
+            "HYS_PCT": 0.015,
+            "MIN_SECONDS_BETWEEN_ORDERS": 30,
+            "MAX_ORDERS_PER_HOUR": 12,
+            "TECH_TREND_MIN": 0.01,
+            "VOL_MIN": 0.0020,
+            "VOL_MIN_HIGH": 0.0030,
+            "TP_ATR_MULT": 0.7,
+            "SL_ATR_MULT": 0.6,
+        },
+        "neutral": {
+            "PBUY": 0.62,
+            "PSELL": 0.38,
+            "MIN_EV_NET": 0.0005,
+            "HYS_PCT": 0.018,
+            "MIN_SECONDS_BETWEEN_ORDERS": 45,
+            "MAX_ORDERS_PER_HOUR": 8,
+            "TECH_TREND_MIN": 0.02,
+            "VOL_MIN": 0.0025,
+            "VOL_MIN_HIGH": 0.0035,
+            "TP_ATR_MULT": 0.8,
+            "SL_ATR_MULT": 0.6,
+        },
+        "safe": {
+            "PBUY": 0.66,
+            "PSELL": 0.34,
+            "MIN_EV_NET": 0.0010,
+            "HYS_PCT": 0.020,
+            "MIN_SECONDS_BETWEEN_ORDERS": 60,
+            "MAX_ORDERS_PER_HOUR": 6,
+            "TECH_TREND_MIN": 0.03,
+            "VOL_MIN": 0.0030,
+            "VOL_MIN_HIGH": 0.0040,
+            "TP_ATR_MULT": 0.9,
+            "SL_ATR_MULT": 0.6,
+        },
+        "scalper_1pc": {
+            # Entrées / rythme
+            "PBUY": 0.56,
+            "PSELL": 0.40,  # utile pour l'hystérésis si multi-lots off
+            "MIN_EV_NET": -0.0003,
+            "MIN_SECONDS_BETWEEN_ORDERS": 12,
+            "MAX_ORDERS_PER_HOUR": 80,
+            # Désactive le multi-lots -> active sorties TP/SL/BE/time du core
+            "MULTI_TRADE_MODE": False,
+            # TP/SL serrés
+            "MIN_TP_PCT": 0.0020,
+            "MIN_SL_PCT": 0.0038,
+            "TP_ATR_MULT": 0.55,
+            "SL_ATR_MULT": 0.65,
+            # Breakeven / Time / Hystérésis
+            "TRAIL_TO_BREAKEVEN_PCT": 0.0030,
+            "BE_MIN_HOLD_SEC": 120,
+            "BE_TRAIL_BACK_PCT": 0.0020,
+            "TIME_STOP_MIN": 7,
+            "HYS_PCT": 0.012,
+            # Partial
+            "TAKE_PARTIAL_AT_PCT": 0.0016,
+            "TAKE_PARTIAL_PCT": 0.34,
+            "PARTIAL_MIN_HOLD_SEC": 45,
+            "PARTIAL_MIN_NOTIONAL": 10.0,
+            "PARTIAL_ALLOW_MULTIPLE": False,
+            # Sentiment
+            "SENTI_WEIGHT": 0.15,
+            "TWITTER_WEIGHT": 0.25,
+            "SIGMOID_SCALE": 3.0,
+            # Coûts par défaut (garde-les si déjà présents ailleurs)
+            "COST_MAKER_BPS": 2.0,
+            "COST_TAKER_BPS": 5.0,
+            "OTHER_COST_BPS": 2.0,
+            "FEE_BUFFER_BPS": 5.0,
+            # Divers déjà utilisés par ton core
+            "ALLOW_MULTIPLE": True,  # sans effet si MULTI_TRADE_MODE=False
+            "MAX_CONCURRENT_ENTRIES": 4,
+            "MIN_REENTRY_DISTANCE_BPS": 15,
+            "REENTRY_BUY_PCT": 0.15,
+            "BUY_PCT": 0.25,
+            "PBUY_OFF_HOURS_ADD": 0.03,
+        },
+    }
+
+    # Clés autorisées (sécurité)
+    ALLOWED = {
+        "PBUY",
+        "PSELL",
+        "MIN_EV_NET",
+        "HYS_PCT",
+        "MIN_SECONDS_BETWEEN_ORDERS",
+        "MAX_ORDERS_PER_HOUR",
+        "TECH_TREND_MIN",
+        "VOL_MIN",
+        "VOL_MIN_HIGH",
+        "TP_ATR_MULT",
+        "SL_ATR_MULT",
+        "MIN_TP_PCT",
+        "MIN_SL_PCT",
+        "BUY_PCT",
+        "TW_SMOOTH_EMA",
+        "A0_BIAS",
+        "TECH_WEIGHT",
+        "USE_SGD_SCORE",
+        "SGD_BLEND",
+        "COST_MAKER_BPS",
+        "COST_TAKER_BPS",
+        "OTHER_COST_BPS",
+        "FEE_BUFFER_BPS",
+        "TRAIL_TO_BREAKEVEN_PCT",
+        "BE_TRAIL_BACK_PCT",
+        "BE_MIN_HOLD_SEC",
+        "TIME_STOP_MIN",
+        "MIN_HOLD_SEC",
+        "ALLOW_MULTIPLE",
+        "MAX_CONCURRENT_ENTRIES",
+        "MIN_REENTRY_DISTANCE_BPS",
+        "REENTRY_BUY_PCT",
+        "PBUY_OFF_HOURS_ADD",
+        "MULTI_TRADE_MODE",
+        "TAKE_PARTIAL_AT_PCT",
+        "TAKE_PARTIAL_PCT",
+        "PARTIAL_MIN_HOLD_SEC",
+        "PARTIAL_MIN_NOTIONAL",
+        "PARTIAL_ALLOW_MULTIPLE",
+        "PARTIAL_COOLDOWN_SEC",
+    }
+
+    # Base normal
+    base_normal = {
+        "PBUY": 0.60,
+        "PSELL": 0.40,
+        "MIN_EV_NET": 0.0003,
+        "HYS_PCT": 0.015,
+        "MIN_SECONDS_BETWEEN_ORDERS": 30,
+        "MAX_ORDERS_PER_HOUR": 12,
+        "TECH_TREND_MIN": 0.02,
+        "VOL_MIN": 0.0025,
+        "VOL_MIN_HIGH": 0.0035,
+        "TP_ATR_MULT": 0.8,
+        "SL_ATR_MULT": 0.6,
+        "MIN_TP_PCT": 0.006,
+        "MIN_SL_PCT": 0.005,
+        "TRAIL_TO_BREAKEVEN_PCT": 0.006,
+        "BE_TRAIL_BACK_PCT": 0.002,
+        "BE_MIN_HOLD_SEC": 180,
+        "MIN_HOLD_SEC": 90,
+        "TIME_STOP_MIN": 15,
+        "ALLOW_MULTIPLE": True,
+        "MAX_CONCURRENT_ENTRIES": 3,
+        "MIN_REENTRY_DISTANCE_BPS": 15,
+        "REENTRY_BUY_PCT": 0.15,
+        "COST_MAKER_BPS": 2.0,
+        "COST_TAKER_BPS": 5.0,
+        "OTHER_COST_BPS": 1.0,
+        "FEE_BUFFER_BPS": 5.0,
+        "BUY_PCT": 0.25,
+        "PBUY_OFF_HOURS_ADD": 0.03,
+    }
+
+    # Construction
+    if mode == "learning":
+        LEARNING_MODE = True
+        # Base = params courants
+        new_params = dict(_PARAMS)
+
+        # 1) Si un preset est fourni, on importe ses cibles/volumes/coûts (TP/SL inclus)
+        if preset in PRESETS:
+            keep_keys = (
+                "MIN_TP_PCT",
+                "TP_ATR_MULT",
+                "MIN_SL_PCT",
+                "SL_ATR_MULT",
+                "HYS_PCT",
+                "TRAIL_TO_BREAKEVEN_PCT",
+                "BE_TRAIL_BACK_PCT",
+                "BE_MIN_HOLD_SEC",
+                "MIN_HOLD_SEC",
+                "TIME_STOP_MIN",
+                "COST_MAKER_BPS",
+                "COST_TAKER_BPS",
+                "OTHER_COST_BPS",
+                "FEE_BUFFER_BPS",
+                "BUY_PCT",
+                "REENTRY_BUY_PCT",
+                "MIN_REENTRY_DISTANCE_BPS",
+                "ALLOW_MULTIPLE",
+                "MAX_CONCURRENT_ENTRIES",
+            )
+            for k in keep_keys:
+                if k in PRESETS[preset]:
+                    new_params[k] = PRESETS[preset][k]
+            chosen_preset = f"learning+{preset}"
+        else:
+            chosen_preset = "learning"
+
+        # 2) GATES REMOVAL: on ne bloque pas l’entrée
+        new_params.update(
+            {
+                "PBUY": 1.0,
+                "PSELL": 1.0,
+                "MIN_EV_NET": -9999.0,
+                "TECH_TREND_MIN": 0.0,
+                "VOL_MIN": 0.0,
+                "VOL_MIN_HIGH": 0.0,
+                # cadence
+                "MIN_SECONDS_BETWEEN_ORDERS": max(
+                    1, int(_PARAMS.get("MIN_SECONDS_BETWEEN_ORDERS", 10))
+                ),
+                "MAX_ORDERS_PER_HOUR": max(
+                    24, int(_PARAMS.get("MAX_ORDERS_PER_HOUR", 60))
+                ),
+            }
+        )
+
+    else:
+        LEARNING_MODE = False
+        new_params = dict(base_normal)
+        if preset in PRESETS:
+            new_params.update(PRESETS[preset])
+            chosen_preset = preset
+        else:
+            chosen_preset = "custom"
+
+    # Overrides
+    for k, v in overrides.items():
+        if k in ALLOWED:
+            try:
+                if k in {
+                    "MIN_SECONDS_BETWEEN_ORDERS",
+                    "MAX_ORDERS_PER_HOUR",
+                    "BE_MIN_HOLD_SEC",
+                    "MIN_HOLD_SEC",
+                    "TIME_STOP_MIN",
+                    "MAX_CONCURRENT_ENTRIES",
+                    "MIN_REENTRY_DISTANCE_BPS",
+                }:
+                    new_params[k] = int(v)
+                else:
+                    new_params[k] = float(v) if isinstance(v, (int, float, str)) else v
+            except Exception:
+                pass
+
+    # Garde-fous
+    new_params["PBUY"] = max(0.0, min(1.0, new_params.get("PBUY", 0.6)))
+    new_params["PSELL"] = max(0.0, min(1.0, new_params.get("PSELL", 0.4)))
+    new_params["HYS_PCT"] = max(0.0, new_params.get("HYS_PCT", 0.015))
+    new_params["MIN_SECONDS_BETWEEN_ORDERS"] = max(
+        1, int(new_params.get("MIN_SECONDS_BETWEEN_ORDERS", 30))
+    )
+    new_params["MAX_ORDERS_PER_HOUR"] = max(
+        1, int(new_params.get("MAX_ORDERS_PER_HOUR", 12))
+    )
+    for key in (
+        "TP_ATR_MULT",
+        "SL_ATR_MULT",
+        "MIN_TP_PCT",
+        "MIN_SL_PCT",
+        "TRAIL_TO_BREAKEVEN_PCT",
+        "BE_TRAIL_BACK_PCT",
+    ):
+        new_params[key] = max(0.0001, float(new_params.get(key, 0.001)))
+
+    # Application
+    _PARAMS.update(new_params)
+
+    # Persistance
+    try:
+        kv_set("AUTOTRADE_MODE", "learning" if LEARNING_MODE else "normal")
+        kv_set("AUTOTRADE_PRESET", chosen_preset)
+        kv_set("AUTOTRADE_PARAMS", json.dumps(_PARAMS))
+    except Exception:
+        pass
+
+    return jsonify(
+        {
+            "ok": True,
+            "learning_mode": LEARNING_MODE,
+            "preset": chosen_preset,
+            "params": _PARAMS,
+        }
+    )
+
+
+def _rebuild_from_trades(start_cash: float | None = None):
+    """Reconstruit l'état {cash, btc} en appliquant tous les trades sur un cash de départ."""
+    try:
+        if start_cash is None:
+            start_cash = float(os.getenv("START_CASH", "200"))
+    except Exception:
+        start_cash = 200.0
+
+    cash = float(start_cash)
+    btc = 0.0
+    try:
+        rows = _query("SELECT side, price, qty, fee FROM trades ORDER BY ts ASC")
+    except NameError:
+        rows = _q("SELECT side, price, qty, fee FROM trades ORDER BY ts ASC")
+
+    for t in rows:
+        side = str(t["side"]).upper()
+        p = float(t["price"])
+        q = float(t["qty"])
+        f = float(t.get("fee") or 0.0)
+        if side == "BUY":
+            btc += q
+            cash -= p * q + f
+        else:  # SELL
+            btc -= q
+            cash += p * q - f
+    return cash, btc
+
+
+def _learning_affects_balance():
+    return os.getenv("LEARNING_AFFECTS_BALANCE", "0") in ("1", "true", "True", "yes")
+
+
+def fmt_price(x):
+    try:
+        return f"{float(x):,.2f}".replace(",", " ")
+    except (ValueError, TypeError):
+        return str(x)
+
+
+def fmt_qty(q):
+    try:
+        return f"{float(q):.6f}"
+    except (ValueError, TypeError):
+        return str(q)
+
+
+def fmt_prob(p):
+    try:
+        return f"{float(p):.3f}"
+    except (ValueError, TypeError):
+        return str(p)
+
+
+def fmt_abs_pct(p):  # p exprimé en pourcentage déjà (p=3.0 => "3.00%")
+    try:
+        return f"{float(p):.2f}%"
+    except (ValueError, TypeError):
+        return str(p)
+
+
+def fmt_rel_pct(x):  # x=0.123 => "12.30%"
+    try:
+        return f"{float(x)*100:.2f}%"
+    except (ValueError, TypeError):
+        return str(x)
+
+
+def kv_set_bool(key: str, val: bool) -> bool:
+    return kv_set(key, "1" if val else "0")
+
+
+def _current_position_qty() -> float:
+    try:
+        snap = get_account_snapshot_safe() or {}
+        pq = float(
+            snap.get("btc")
+            if snap.get("btc") is not None
+            else snap.get("position_qty") or 0.0
+        )
+        if pq > 0:
+            return pq
+    except Exception:
+        pass
+    # fallback STATE
+    return float(STATE.get("position_qty") or 0.0)
+
+
+def apply_fill(side: str, price: float, qty: float, fee: float = 0.0):
+    ts = time.time()
+    side_u = str(side or "").upper()
+    px = float(price)
+    q_req = float(qty)
+    q = max(0.0, float(qty))
+    f = max(0.0, float(fee))
+
+    # base d'état (STATE prioritaire; fallback snapshot)
+    base = get_account_snapshot_safe() or {}
+    base_cash = float(
+        STATE.get("cash")
+        if STATE.get("cash") is not None
+        else (base.get("cash") or 0.0)
+    )
+    base_qty = float(
+        STATE.get("position_qty")
+        if STATE.get("position_qty") is not None
+        else (base.get("btc") or base.get("position_qty") or 0.0)
+    )
+
+    # clamps selon affordability / dispo
+    if side_u == "BUY":
+        afford_usd = max(0.0, base_cash - f)
+        max_qty = afford_usd / max(1e-12, px)
+        if q > max_qty + 1e-12:
+            if q_req > 0 and f > 0:
+                f *= max_qty / q_req
+            q = max(0.0, max_qty)
+        new_qty, new_cash = base_qty + q, base_cash - px * q - f
+    else:  # SELL
+        if q > base_qty + 1e-12:
+            if q_req > 0 and f > 0:
+                f *= base_qty / q_req
+            q = max(0.0, base_qty)
+        new_qty, new_cash = base_qty - q, base_cash + px * q - f
+
+    if q <= 0.0:
+        set_price(px, source="fill")
+        return
+
+    # DB: trade + snapshot (schéma large ou fallback ancien)
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+
+        cur.execute(
+            "INSERT INTO trades(ts,side,price,qty,fee) VALUES (?,?,?,?,?)",
+            (float(ts), side_u, px, q, f),
+        )
+
+        valuation = new_cash + new_qty * px
+        try:
+            cur.execute(
+                """
+                INSERT INTO snapshots(ts,price,cash,position_qty,btc,valuation,realized_pnl,unrealized_pnl)
+                VALUES (?,?,?,?,?,?,?,?)
+            """,
+                (float(ts), px, new_cash, new_qty, new_qty, valuation, None, None),
+            )
+        except Exception:
+            cur.execute(
+                """
+                INSERT OR REPLACE INTO snapshots(ts,price,cash,btc,valuation)
+                VALUES (?,?,?,?,?)
+            """,
+                (float(ts), float(px), new_cash, new_qty, valuation),
+            )
+
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        app.logger.exception("[apply_fill] DB write failed")
+        raise
+    finally:
+        conn.close()
+
+    # État mémoire
+    STATE["position_qty"] = float(new_qty)
+    STATE["cash"] = float(new_cash)
+    set_price(px, source="fill")
+    STATE["in_position"] = STATE.get("position_qty", 0.0) > 1e-12
+
+
+def _start_cash():
+# [MOVED IMPORT]     import os
+
+    try:
+        return float(os.getenv("START_CASH", "10000") or 10000.0)
+    except Exception:
+        return 10000.0
+
+
+def _snapshots_cols():
+    conn = get_db()
+    c = conn.cursor()
+    cols = [r[1] for r in c.execute("PRAGMA table_info(snapshots)").fetchall()]
+    conn.close()
+    return set(cols)
+
+
+def _ensure_snapshots_minimal():
+    try:
+        _exec(
+            """
+        CREATE TABLE IF NOT EXISTS snapshots(
+            ts        REAL,
+            cash      REAL,
+            btc       REAL,
+            valuation REAL
+        );
+        """,
+            (),
+        )
+    except Exception as e:
+        app.logger.warning(f"_ensure_snapshots_minimal: {e}")
+
+
+def _finite(x: float) -> float:
+    try:
+        if x is None or isinstance(x, str):
+            return 0.0
+        if math.isnan(x) or math.isinf(x):
+            return 0.0
+        return float(x)
+    except Exception:
+        return 0.0
+
+
+def _normalize_ts(ts):
+    # si en ms, convertit en s
+    try:
+        ts = float(ts)
+        if ts > 1e12:  # clairement des millisecondes
+            ts = ts / 1000.0
+    except Exception:
+        ts = time.time()
+    return ts
+
+
+def snapshot_now(prefer_state: bool = True):
+    """
+    Enregistre un snapshot du portefeuille.
+    - prefer_state=True : on prend STATE['cash']/['position_qty'] s'ils existent,
+      pour ne pas "perdre" un BUY/SELL tout juste appliqué.
+    """
+    try:
+        snap_db = get_account_snapshot_safe() or {}
+    except Exception:
+        snap_db = {}
+
+    # Prix : live d'abord, sinon fallback
+    px = float(
+        STATE.get("price") or _latest_price_fallback() or snap_db.get("price") or 0.0
+    )
+
+    if prefer_state:
+        cash = float(
+            STATE.get("cash")
+            if STATE.get("cash") is not None
+            else (snap_db.get("cash") or 0.0)
+        )
+        btc = float(
+            STATE.get("position_qty")
+            if STATE.get("position_qty") is not None
+            else (snap_db.get("btc") or 0.0)
+        )
+    else:
+        cash = float(
+            (snap_db.get("cash") if snap_db else 0.0) or STATE.get("cash") or 0.0
+        )
+        btc = float(
+            (snap_db.get("btc") if snap_db else 0.0) or STATE.get("position_qty") or 0.0
+        )
+
+    # Persistance unique
+    account_snapshot_write(cash=cash, btc=btc, price=px)
+
+
+def _f(x, default=0.0) -> float:
+    """float() tolérant: renvoie default si x n'est pas convertible."""
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return default
+
+
+def _fifo_realized_pnl_and_position():
+    """Calcule realized PnL FIFO + position/cash depuis trades."""
+
+    rows = _q(
+        """
+      SELECT LOWER(COALESCE(side,'')) AS side,
+             COALESCE(price,0.0) AS price,
+             COALESCE(qty,0.0)   AS qty,
+             COALESCE(fee,0.0)   AS fee
+      FROM trades ORDER BY ts ASC
+    """
+    )
+    lots = deque()
+    realized = 0.0
+    cash = _start_cash()
+    pos_qty = 0.0
+    pos_cost = 0.0  # coût alloué de la position courante
+
+    for side, price, qty, fee in rows:
+        px = _f(price)
+        q = _f(qty)
+        f = _f(fee)
+        if side == "buy":
+            cash -= px * q + f
+            lots.append([q, px * q + f])
+            pos_qty += q
+            pos_cost += px * q + f
+        elif side == "sell":
+            cash += px * q - f
+            remain = q
+            alloc_cost = 0.0
+            while remain > 1e-12 and lots:
+                lqty, lcost = lots[0]
+                use = min(lqty, remain)
+                unit_cost = (lcost / lqty) if lqty > 0 else 0.0
+                alloc_cost += unit_cost * use
+                lqty -= use
+                remain -= use
+                if lqty <= 1e-12:
+                    lots.popleft()
+                else:
+                    lots[0][0] = lqty
+                    lots[0][1] = unit_cost * lqty
+            realized += (px * q - f) - alloc_cost
+            pos_qty -= q
+            pos_cost = max(0.0, pos_cost - alloc_cost)
+
+    pos_avg = (pos_cost / pos_qty) if pos_qty > 1e-12 else 0.0
+    return realized, cash, pos_qty, pos_avg
+
+
+def get_account_snapshot_safe():
+    """
+    Renvoie un snapshot robuste sans lever d'exception.
+    Ordre : snapshots (RICHE d’abord) -> snapshots (SIMPLE) -> account_snapshot -> défaut START_CASH.
+    """
+    # 1) snapshots
+    try:
+        # Utiliser un curseur direct pour PRAGMA (évite _q qui renvoie des dicts)
+        conn = get_db()
+        c = conn.cursor()
+        cols = {
+            row["name"] for row in c.execute("PRAGMA table_info(snapshots)").fetchall()
+        }
+        conn.close()
+
+        if cols:
+            # --- Schéma RICHE ---
+            if {"ts", "cash", "valuation"}.issubset(cols) and (
+                "position_qty" in cols or "price" in cols
+            ):
+                rows = _q(
+                    """
+                    SELECT
+                        ts,
+                        COALESCE(price, 0.0)            AS price,
+                        COALESCE(cash, 0.0)             AS cash,
+                        COALESCE(position_qty, 0.0)     AS position_qty,
+                        COALESCE(position_avg, 0.0)     AS position_avg,
+                        COALESCE(valuation, 0.0)        AS valuation
+                    FROM snapshots
+                    ORDER BY ts DESC
+                    LIMIT 1
+                """
+                )
+                if rows:
+                    row = rows[0]  # dict
+                    ts = float(row.get("ts") or 0.0)
+                    price = float(row.get("price") or 0.0)
+                    cash = float(row.get("cash") or 0.0)
+                    pq = float(row.get("position_qty") or 0.0)
+                    valuation = float(row.get("valuation") or 0.0)
+                    if valuation <= 0.0:
+                        # fallback si colonne valuation vide
+                        valuation = cash + pq * (
+                            price or (_latest_price_fallback() or 0.0)
+                        )
+                    return {
+                        "ts": ts,
+                        "price": price or (_latest_price_fallback() or 0.0),
+                        "cash": cash,
+                        "btc": pq,
+                        "valuation": valuation,
+                    }
+
+            # --- Schéma SIMPLE ---
+            if {"ts", "cash", "btc", "valuation"}.issubset(cols) or {
+                "ts",
+                "cash",
+                "valuation",
+            }.issubset(cols):
+                rows = _q(
+                    """
+                    SELECT
+                        ts,
+                        COALESCE(cash, 0.0)                                      AS cash,
+                        COALESCE(btc, position_qty, 0.0)                          AS btc,
+                        COALESCE(valuation, 0.0)                                   AS valuation
+                    FROM snapshots
+                    ORDER BY ts DESC
+                    LIMIT 1
+                """
+                )
+                if rows:
+                    row = rows[0]  # dict
+                    ts = float(row.get("ts") or 0.0)
+                    cash = float(row.get("cash") or 0.0)
+                    btc = float(row.get("btc") or 0.0)
+                    price = float(_latest_price_fallback() or 0.0)
+                    valuation = float(
+                        row.get("valuation") or (cash + btc * price) or 0.0
+                    )
+                    return {
+                        "ts": ts,
+                        "price": price,
+                        "cash": cash,
+                        "btc": btc,
+                        "valuation": valuation,
+                    }
+    except Exception:
+        pass
+
+    # 2) ancien format account_snapshot (si présent)
+    try:
+        rows = _q(
+            """
+            SELECT
+                ts,
+                COALESCE(price, 0.0)         AS price,
+                COALESCE(cash, 0.0)          AS cash,
+                COALESCE(position_qty, 0.0)  AS position_qty,
+                COALESCE(position_avg, 0.0)  AS position_avg,
+                COALESCE(valuation, 0.0)     AS valuation
+            FROM account_snapshot
+            ORDER BY ts DESC
+            LIMIT 1
+        """
+        )
+        if rows:
+            row = rows[0]
+            ts = float(row.get("ts") or 0.0)
+            price = float(row.get("price") or 0.0)
+            cash = float(row.get("cash") or 0.0)
+            pq = float(row.get("position_qty") or 0.0)
+            valuation = float(row.get("valuation") or (cash + pq * price) or 0.0)
+            return {
+                "ts": ts,
+                "price": price,
+                "cash": cash,
+                "btc": pq,
+                "valuation": valuation,
+            }
+    except Exception:
+        # défaut (évite 0/0)
+        return {
+            "ts": time.time(),
+            "price": 0.0,
+            "cash": _start_cash(),
+            "btc": 0.0,
+            "valuation": _start_cash(),
+        }
+
+
+def backfill_snapshots_from_ohlc(tf: str = "1m", limit: int = 1000):
+    """Crée des snapshots (ts, price) à partir de l'OHLC, sans toucher au cash/positions."""
+    items = fetch_ohlc(SYMBOL, tf, limit) or []
+    if not items:
+        return 0
+    conn = get_db()
+    c = conn.cursor()
+    # on insère en utilisant 'close' comme proxy de prix
+    done = 0
+    for it in items:
+        # accepte dicts de /api/ohlc: {'t':..., 'open':..., 'high':..., 'low':..., 'close':...}
+        t = it.get("t") or it.get("ts")
+        px = it.get("close") or it.get("c") or it.get("price")
+        if t is None or px is None:
+            continue
+        try:
+            ts = float(t) / (1000.0 if float(t) > 3e12 else 1.0)  # ms -> s si besoin
+            price = float(px)
+        except Exception:
+            continue
+        c.execute(
+            """
+          INSERT INTO snapshots(ts, price, cash, position_qty, position_avg, valuation, realized_pnl, unrealized_pnl)
+          VALUES (?,?,?,?,?,?,?,?)
+        """,
+            (ts, price, 0.0, 0.0, 0.0, price, 0.0, 0.0),
+        )
+        done += 1
+    conn.commit()
+    conn.close()
+    return done
+
+
+def api_admin_reset_account():
+    """
+    global DECISION_TRACE
+    Remet le compte papier à zéro :
+    - supprime trades / decision_trace / snapshots (et prices optionnel)
+    - remet STATE (cash=200, btc=0) + écrit un snapshot seed
+    - vide les buffers mémoire & structures de positions
+    Body JSON optionnel: {"cash": 200}
+    """
+
+    # Globals potentiels utilisés par le moteur
+    global ENTRY_PRICE, PEAK_PRICE, LAST_ORDER_TS
+    global POSITION, POSITIONS, ORDERS_LAST_HOUR, REINVEST_POOL
+
+    # 1) montant de départ
+    try:
+        data = request.get_json(silent=True) or {}
+    except Exception:
+        data = {}
+    start_cash = float(data.get("cash") or 200.0)
+
+    # 2) purge DB
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        for sql in [
+            "DELETE FROM trades",
+            "DELETE FROM decision_trace",
+            "DELETE FROM snapshots",
+            # décommente la ligne suivante si tu stockes des ticks/prix
+            # "DELETE FROM prices",
+        ]:
+            try:
+                cur.execute(sql)
+            except Exception:
+                pass
+        conn.commit()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    # 3) reset mémoire (STATE)
+    try:
+        STATE["cash"] = float(start_cash)
+        STATE["position_qty"] = 0.0
+        STATE["in_position"] = False
+        STATE["price"] = float(
+            STATE.get("price") or 0.0
+        )  # on garde le dernier prix si dispo
+        STATE["p_up"] = 0.5
+        STATE["ev"] = 0.0
+        STATE["ev_net"] = 0.0
+        STATE["entries_count"] = 0
+        STATE["entry_price"] = None
+        STATE["twitter_ema"] = 0.0
+        STATE["twitter_raw"] = 0.0
+    except Exception:
+        pass
+
+    # 4) globals du moteur
+    try:
+        ENTRY_PRICE = None
+        PEAK_PRICE = None
+        LAST_ORDER_TS = None
+    except Exception:
+        pass
+    try:
+        REINVEST_POOL = 0.0
+    except Exception:
+        pass
+
+    # 5) structures de position / files d’ordres
+    try:
+        # POSITION (mode simple)
+        POSITION = {
+            "entry": None,
+            "opened_at": None,
+            "target_pct": None,
+            "stop_pct": None,
+            "arm_id": None,
+        }
+    except Exception:
+        pass
+    try:
+        # POSITIONS (multi-lots)
+        if "POSITIONS" in globals() and POSITIONS is not None:
+            try:
+                POSITIONS.clear()
+            except Exception:
+                try:
+                    POSITIONS = []
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    try:
+        # historique anti-spam d’ordres
+        if "ORDERS_LAST_HOUR" in globals() and ORDERS_LAST_HOUR is not None:
+            try:
+                ORDERS_LAST_HOUR.clear()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # 6) traces en mémoire
+    try:
+        TRACE.clear()
+    except Exception:
+        pass
+
+    # 6-bis) trace enrichie / why
+    try:
+        if isinstance(DECISION_TRACE, deque):
+            DECISION_TRACE.clear()
+        else:
+            # filet de sécurité si jamais mal initialisée
+            DECISION_TRACE = deque(maxlen=1000)
+    except Exception:
+        pass
+
+    # 7) kv (facultatif)
+    try:
+        kv_set("START_CASH", str(start_cash))
+    except Exception:
+        pass
+
+    # 8) snapshot seed
+    try:
+        account_snapshot_write(
+            ts=time.time(),
+            price=float(STATE.get("price") or 0.0),
+            cash=float(start_cash),
+            btc=0.0,
+            position_qty=0.0,
+            valuation=float(start_cash),
+        )
+    except Exception:
+        try:
+            account_snapshot_write(float(start_cash), 0.0, float(start_cash))
+        except Exception:
+            pass
+
+    return jsonify(
+        {
+            "ok": True,
+            "message": "Compte papier réinitialisé",
+            "cash": float(start_cash),
+            "btc": 0.0,
+        }
+    )
+
+
+def api_admin_migrate_meta_json():
+    """Ajoute la colonne meta_json à decision_trace si elle n'existe pas."""
+    conn = None
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        # Vérifie les colonnes existantes
+        cols = [row[1] for row in c.execute("PRAGMA table_info(decision_trace)")]
+        if "meta_json" in cols:
+            return jsonify({"ok": True, "message": "meta_json existe déjà"})
+
+        c.execute("ALTER TABLE decision_trace ADD COLUMN meta_json TEXT")
+        conn.commit()
+        return jsonify({"ok": True, "message": "Colonne meta_json ajoutée"})
+    except Exception as e:
+        # SQLite n'a pas IF NOT EXISTS pour ADD COLUMN ; on ignore "duplicate column name"
+        msg = str(e)
+        if "duplicate column name" in msg.lower():
+            try:
+                if conn:
+                    conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"ok": True, "message": "meta_json existait déjà"}), 200
+        return jsonify({"ok": False, "error": msg}), 500
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+def admin_reset_ledger():
+    """ATTENTION: purge trades + snapshots et réinitialise le compte avec START_CASH."""
+    try:
+        _exec("DELETE FROM trades", ())
+        _exec("DELETE FROM snapshots", ())
+        cash0 = float(os.getenv("START_CASH", "200"))
+        px = float(STATE.get("price") or get_latest_price() or 0.0)
+        ts = time.time()
+        _exec(
+            """
+            INSERT INTO snapshots(ts, price, cash, position_qty, btc, valuation, realized_pnl, unrealized_pnl)
+            VALUES (?,?,?,?,?,?,?,?)
+        """,
+            (float(ts), px, cash0, 0.0, 0.0, cash0, None, None),
+        )
+        STATE["cash"] = cash0
+        STATE["position_qty"] = 0.0
+        set_price(px, source="fill")
+        return jsonify(
+            {"ok": True, "cash": cash0, "btc": 0.0, "valuation": cash0, "price": px}
+        )
+    except Exception as e:
+        app.logger.exception("reset_ledger error")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+def api_tick():
+    """Injecte un prix 'market' pour tester direction/TP/SL sans attendre le flux."""
+    data = request.get_json(silent=True) or {}
+    try:
+        px = float(data.get("price"))
+    except Exception:
+        return jsonify({"ok": False, "error": "price float requis"}), 400
+    if px <= 0:
+        return jsonify({"ok": False, "error": "price>0"}), 400
+
+    set_price(px, source="market")
+    try:
+        snapshot_now()
+    except Exception:
+        pass
+
+    return jsonify(
+        {
+            "ok": True,
+            "price": float(STATE.get("price") or 0.0),
+            "price_prev": STATE.get("price_prev"),
+            "price_chg": float(STATE.get("price_chg") or 0.0),
+            "direction": (
+                "↑"
+                if (STATE.get("price_chg") or 0.0) > 0
+                else "↓" if (STATE.get("price_chg") or 0.0) < 0 else "→"
+            ),
+        }
+    )
+
+
+def api_admin_sync_state():
+    try:
+        hydrate_state_from_snapshot()
+        return jsonify(
+            {
+                "ok": True,
+                "state": {
+                    "cash": STATE.get("cash"),
+                    "position_qty": STATE.get("position_qty"),
+                    "price": STATE.get("price"),
+                },
+            }
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+def api_step():
+    """Exécute une itération de décision/auto-trade (utile après un _tick)."""
+    try:
+        res = decide_and_maybe_trade()
+        return jsonify(
+            {"ok": True, "result": res, "price": float(STATE.get("price") or 0.0)}
+        )
+    except Exception as e:
+        app.logger.exception("step error")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+def api_admin_ensure_indexes():
+    conn = get_db()
+    c = conn.cursor()
+    c.executescript(
+        """
+    CREATE INDEX IF NOT EXISTS idx_examples_ts ON examples(ts);
+    CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON snapshots(ts);
+    CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(ts);
+    CREATE INDEX IF NOT EXISTS idx_prices_ts  ON prices(ts);
+    CREATE INDEX IF NOT EXISTS idx_prices_t   ON prices(t);
+    """
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+def log_example_row(
+    ts,
+    price,
+    reddit_avg,
+    tw_ema,
+    sig_tech,
+    atr,
+    ema_slope,
+    p_up,
+    tp_pct,
+    sl_pct,
+    decision,
+    slippage=0.0,
+):
+    try:
+        atr_pct = (atr / price) if (atr and price and price > 0) else 0.0
+        hod = int(datetime.utcnow().hour)
+        vol_norm = atr_pct
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            """
+          INSERT INTO examples
+            (ts, price, reddit_avg, twitter_ema, sig_tech, atr_pct, ema_slope,
+             hour_of_day, vol_norm, p_up, tp_pct, sl_pct, decision, slippage)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+            (
+                float(ts or time.time()),
+                float(price or 0.0),
+                float(reddit_avg or 0.0),
+                float(tw_ema or 0.0),
+                float(sig_tech or 0.0),
+                float(atr_pct or 0.0),
+                float(ema_slope or 0.0),
+                int(hod),
+                float(vol_norm or 0.0),
+                float(p_up or 0.5),
+                float(tp_pct or 0.0),
+                float(sl_pct or 0.0),
+                str(decision or "hold"),
+                float(slippage or 0.0),
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print("[examples] insert failed:", e)
+
+
+def _to_float_safe(x, default=None):
+    try:
+        if x is None:
+            return default
+        return float(x)
+    except Exception:
+        return default
+
+
+def _kv_get(key, default=None):
+    try:
+        # Essaie d'abord (key,value)
+        r = _q("SELECT value AS val FROM kv WHERE key=? LIMIT 1", (key,))
+        if r and r[0].get("val") is not None:
+            v = r[0]["val"]
+            return json.loads(v) if isinstance(v, str) else v
+    except Exception:
+        pass
+    try:
+        # Fallback (k,v)
+        r = _q("SELECT v AS val FROM kv WHERE k=? LIMIT 1", (key,))
+        if r and r[0].get("val") is not None:
+            v = r[0]["val"]
+            return json.loads(v) if isinstance(v, str) else v
+    except Exception:
+        pass
+    return default
+
+# --- REMOVED DUPLICATE BLOCK (lines 6177-6186) ---
+
+
+def _zscore_vec(x, mu, sigma):
+    out = []
+    for k in FEATURES:
+        v = float(x.get(k, 0.0))
+        m = float(mu.get(k, 0.0))
+        s = float(sigma.get(k, 1.0)) or 1.0
+        out.append((v - m) / s)
+    return out
+
+
+def _dot(w, x):
+    return sum((w[i] if i < len(w) else 0.0) * x[i] for i in range(len(x)))
+
+
+def sigmoid_np(x, k: float = 1.0):
+    z = k * x
+    return np.where(z >= 0, 1.0 / (1.0 + np.exp(-z)), np.exp(z) / (1.0 + np.exp(z)))
+
+
+def sgd_predict_proba(row):
+    """row = dict(features) → p_up_raw"""
+    state = _kv_get("sgd_model", {})
+    w = state.get("w", [0.0] * len(FEATURES))
+    b = float(state.get("b", 0.0))
+    mu = state.get("mu", {k: 0.0 for k in FEATURES})
+    sigma = state.get("sigma", {k: 1.0 for k in FEATURES})
+    x = _zscore_vec(row, mu, sigma)
+    return _sigmoid(_dot(w, x) + b)
+
+
+def sgd_train_online(limit=1000, lr=0.05, l2=1e-4):
+    """
+    Prend les derniers exemples tp/sl, met à jour mu/sigma (robuste) + w,b par SGD.
+    Gère rows en tuple OU mapping (sqlite3.Row/dict).
+    """
+    rows = _q(
+        """
+       SELECT
+         CAST(ts          AS REAL)   AS ts,
+         CAST(price       AS REAL)   AS price,
+         CAST(reddit_avg  AS REAL)   AS reddit_avg,
+         CAST(twitter_ema AS REAL)   AS twitter_ema,
+         CAST(sig_tech    AS REAL)   AS sig_tech,
+         CAST(atr_pct     AS REAL)   AS atr_pct,
+         CAST(ema_slope   AS REAL)   AS ema_slope,
+         CAST(hour_of_day AS INTEGER) AS hour_of_day,
+         CAST(vol_norm    AS REAL)   AS vol_norm,
+         CAST(p_up        AS REAL)   AS p_up,
+         outcome
+       FROM examples
+       WHERE outcome IN ('tp','sl')
+       ORDER BY id DESC
+       LIMIT ?
+    """,
+        (int(limit),),
+    )
+
+    if not rows:
+        return {"trained": 0}
+
+    KEYS = [
+        "ts",
+        "price",
+        "reddit_avg",
+        "twitter_ema",
+        "sig_tech",
+        "atr_pct",
+        "ema_slope",
+        "hour_of_day",
+        "vol_norm",
+        "p_up",
+        "outcome",
+    ]
+
+
+def sgd_train_online_job():
+    r1 = sgd_train_online(limit=2000)  # modèle binaire existant
+    r2 = train_mc_once(_q, kv_get, kv_set, limit=2000)  # tri-classe
+    return {"bin": r1, "mc": r2}
+
+    # helpers
+    def row_to_dict(row):
+        # sqlite3.Row est mapping: row["col"] OK ; mais iter(row) donne les noms !
+        try:
+            # mapping/dict-like
+            return {k: (row.get(k) if hasattr(row, "get") else row[k]) for k in KEYS}
+        except Exception:
+            # tuple-like
+            return dict(zip(KEYS, row))
+
+    def fnum(v, default=0.0):
+        if v is None:
+            return default
+        try:
+            return float(v)
+        except Exception:
+            try:
+                return float(str(v).strip())
+            except Exception:
+                return default
+
+    # FEATURES doit contenir des clés présentes dans KEYS (p.ex. 'reddit_avg','twitter_ema',...)
+    feats = {k: [] for k in FEATURES}
+    D = []
+    Y = []
+
+    for r in rows:
+        d = row_to_dict(r)
+        D.append(d)
+        for k in FEATURES:
+            feats[k].append(fnum(d.get(k), 0.0))
+        Y.append(1 if str(d.get("outcome")) == "tp" else 0)
+
+    if not Y:
+        return {"trained": 0}
+
+    # µ et σ robustes
+# [MOVED IMPORT]     import numpy as _np
+
+    mu = {k: (sum(feats[k]) / len(feats[k]) if feats[k] else 0.0) for k in FEATURES}
+    sigma = {}
+    for k in FEATURES:
+        a = _np.array(feats[k]) if feats[k] else _np.array([0.0])
+        if a.size > 4:
+            p16, p84 = _np.percentile(a, [16, 84])
+            sd = (p84 - p16) / 2.0
+        else:
+            m = float(a.mean())
+            sd = float(a.std())
+            if sd <= 1e-6:
+                sd = 1.0
+        sigma[k] = float(sd)
+
+    # état précédent
+# [MOVED IMPORT]     import json
+
+    try:
+        state_raw = kv_get("sgd_model")  # adapte si c'est _kv_get chez toi
+        state = json.loads(state_raw) if state_raw else {}
+    except Exception:
+        state = {}
+
+    w = list(state.get("w", [0.0] * len(FEATURES)))
+    b = float(state.get("b", 0.0))
+
+    # 1 passe SGD (ancien -> récent)
+    trained = 0
+    for d in D[::-1]:
+        # vector z-score
+        x = []
+        for k in FEATURES:
+            v = (fnum(d.get(k), 0.0) - mu[k]) / max(1e-9, sigma[k])
+            x.append(v)
+
+        z = _dot(w, x) + b
+        global _PARAMS
+        k = float((_PARAMS or {}).get("SIGMOID_SCALE", 3.0))
+
+        # appel compatible quelle que soit la signature (_sigmoid(x, k) ou _sigmoid(x, k=...))
+        try:
+            p = float(_sigmoid(z, k))
+        except TypeError:
+            p = float(_sigmoid(z, k=k))
+        # garde-fous numériques
+        p = max(1e-6, min(1.0 - 1e-6, p))
+        y = 1 if str(d.get("outcome")) == "tp" else 0
+
+        err = p - y
+        for i in range(len(w)):
+            w[i] -= lr * (err * x[i] + l2 * w[i])
+        b -= lr * err
+        trained += 1
+
+    # save
+    try:
+        kv_set(
+            "sgd_model",
+            json.dumps(
+                {"w": w, "b": b, "mu": mu, "sigma": sigma, "features": FEATURES}
+            ),
+        )
+    except Exception:
+        pass
+
+    return {"trained": trained, "w_norm": sum(abs(v) for v in w)}
+
+
+def _safe_logit(p):
+    eps = 1e-6
+    p = min(max(p, eps), 1 - eps)
+    return math.log(p / (1 - p))
+
+
+def calibrate_platt(limit=3000):
+    rows = _q(
+        "SELECT p_up, outcome FROM examples WHERE p_up IS NOT NULL AND outcome IS NOT NULL ORDER BY id DESC LIMIT ?",
+        (int(limit),),
+    )
+    X = []
+    Y = []
+    for p, out in rows:
+        y = 1 if str(out) == "tp" else (0 if str(out) == "sl" else None)
+        if y is None:
+            continue
+        X.append([1.0, _safe_logit(float(p))])  # intercept + logit(p)
+        Y.append(float(y))
+    if len(Y) < 50:
+        return {"ok": False, "error": "not_enough_labels"}
+    # régression logistique 2 paramètres via 5 itérations Newton
+    X = _np.array(X)
+    Y = _np.array(Y)
+    w = _np.zeros(2)
+    for _ in range(5):
+        z = X.dot(w)
+        p = 1.0 / (1.0 + _np.exp(-_np.clip(z, -30, 30)))
+        W = _np.diag(p * (1 - p))
+        H = X.T.dot(W).dot(X) + 1e-6 * _np.eye(2)
+        g = X.T.dot(p - Y)
+        try:
+            step = _np.linalg.solve(H, g)
+        except Exception:
+            break
+        w -= step
+    A0_BIAS = float(w[0])
+    SIGMOID_SCALE = float(w[1])
+    # pousse dans _PARAMS pour utilisation dans ta décision
+    _PARAMS["A0_BIAS"] = A0_BIAS
+    _PARAMS["SIGMOID_SCALE"] = SIGMOID_SCALE
+    return {
+        "ok": True,
+        "A0_BIAS": A0_BIAS,
+        "SIGMOID_SCALE": SIGMOID_SCALE,
+        "n": int(len(Y)),
+    }
+
+
+def apply_calibration(p_raw):
+    a = float(_PARAMS.get("A0_BIAS", 0.0))
+    s = float(_PARAMS.get("SIGMOID_SCALE", 1.0))
+    return _sigmoid(a + s * _safe_logit(p_raw))
+
+
+def brier_score_rolling(limit=1000):
+    rows = _q(
+        "SELECT p_up, outcome FROM examples WHERE p_up IS NOT NULL AND outcome IS NOT NULL ORDER BY id DESC LIMIT ?",
+        (int(limit),),
+    )
+    vals = []
+    for p, out in rows:
+        y = 1 if str(out) == "tp" else (0 if str(out) == "sl" else None)
+        if y is None:
+            continue
+        vals.append((float(p) - y) ** 2)
+    if not vals:
+        return None
+    return float(sum(vals) / len(vals))
+
+
+def detect_drift(threshold=0.25):
+    bs = brier_score_rolling(limit=500)
+    if bs is None:
+        return {"ok": False, "reason": "no_labels"}
+    action = None
+    if bs > threshold:
+        # durcir un peu la gate: VOL_MIN ↑, PBUY ↑ de 0.01
+        _PARAMS["VOL_MIN"] = float(_PARAMS.get("VOL_MIN", 0.0025)) * 1.1
+        _PARAMS["PBUY"] = min(0.99, float(_PARAMS.get("PBUY", 0.6)) + 0.01)
+        action = {"VOL_MIN": _PARAMS["VOL_MIN"], "PBUY": _PARAMS["PBUY"]}
+    return {"ok": True, "brier": bs, "action": action}
+
+
+def _engine_loop():
+    while True:
+        try:
+            paused = kv_get_bool("AUTO_TRADE_PAUSED", False)
+            if not paused and bool(_PARAMS.get("ENGINE_ENABLED", True)):
+                decide_and_maybe_trade()
+        except Exception:
+            app.logger.exception("engine_loop error")
+        time.sleep(float(_PARAMS.get("ENGINE_INTERVAL_S", 3)))
+
+
+def _start_engine_once():
+    global ENGINE_THREAD_STARTED, ENGINE_THREAD
+    if ENGINE_THREAD_STARTED:
+        return
+    ENGINE_THREAD_STARTED = True
+    ENGINE_THREAD = threading.Thread(target=_engine_loop, name="engine", daemon=True)
+    ENGINE_THREAD.start()
+    app.logger.info("⚙️ engine thread started")
+
+
+def get_all_trades():
+    # retourne trades triés par id (asc)
+    rows = _q(
+        "SELECT id, ts, side, price, qty, fee, order_type, maker, slippage FROM trades ORDER BY id ASC"
+    )
+    out = []
+    for r in rows:
+        out.append(
+            {
+                "id": r[0],
+                "ts": float(r[1] or 0.0),
+                "side": str(r[2]).lower(),
+                "price": float(r[3] or 0.0),
+                "qty": float(r[4] or 0.0),
+                "fee": float(r[5] or 0.0),
+                "order_type": r[6],
+                "maker": int(r[7] or 0),
+                "slippage": float(r[8] or 0.0),
+            }
+        )
+    return out
+
+
+def get_examples_unlabeled(older_than_s: float):
+    now = time.time()
+    return _q(
+        "SELECT id, CAST(ts AS REAL) AS ts, CAST(price AS REAL) AS price, "
+        "CAST(tp_pct AS REAL) AS tp_pct, CAST(sl_pct AS REAL) AS sl_pct "
+        "FROM examples "
+        "WHERE outcome IS NULL AND CAST(ts AS REAL) <= ? "
+        "ORDER BY id ASC",
+        (now - older_than_s,),
+    )
+
+
+def get_snapshots_between(t0: float, t1: float):
+    return _q(
+        "SELECT ts, price FROM snapshots WHERE ts>=? AND ts<=? ORDER BY ts ASC",
+        (t0, t1),
+    )
+
+
+def label_examples_k(k_minutes: int = 10) -> int:
+    """
+    Pose outcome (tp/sl/timeout) et ret_k sur examples,
+    avec fenêtre [ts .. ts + k] minutes. Robuste aux valeurs texte.
+    """
+    k_s = max(60.0, float(k_minutes) * 60.0)
+    now = time.time()
+
+    rows = _q(
+        "SELECT id, CAST(ts AS REAL) AS ts, CAST(price AS REAL) AS price, "
+        "       CAST(tp_pct AS REAL) AS tp_pct, CAST(sl_pct AS REAL) AS sl_pct "
+        "FROM examples "
+        "WHERE outcome IS NULL AND CAST(ts AS REAL) <= ? "
+        "ORDER BY id ASC",
+        (now - k_s,),
+    )
+    if not rows:
+        return 0
+
+    conn = get_db()
+    c = conn.cursor()
+    labeled = 0
+    for ex_id, ts0, entry, tp_pct, sl_pct in rows:
+        # sécurise conversions
+        try:
+            ts0 = float(ts0)
+            entry = float(entry)
+            tp_pct = float(tp_pct) if tp_pct is not None else 0.0
+            sl_pct = float(sl_pct) if sl_pct is not None else 0.0
+        except Exception:
+            continue
+        if not (ts0 > 0.0 and entry > 0.0):
+            continue
+
+        # fenêtre de label
+        t1 = ts0 + k_s
+
+        # récup hi/lo/last avec fallback prices si snapshots pauvre
+        hi, lo, last = get_hilo_last_between(ts0, t1)
+
+        if last is None:
+            outcome, ret_k = "timeout", 0.0
+        else:
+            thr_tp = entry * (1.0 + tp_pct)
+            thr_sl = entry * (1.0 - sl_pct)
+            tp_hit = hi >= entry * (1.0 + tp)
+            sl_hit = lo <= entry * (1.0 - sl)
+            if tp_hit and sl_hit:
+                outcome = "timeout"
+            elif tp_hit:
+                outcome = "tp"
+            elif sl_hit:
+                outcome = "sl"
+            else:
+                outcome = "timeout"
+
+            ret_k = (float(last) / entry) - 1.0
+
+        c.execute(
+            "UPDATE examples SET outcome=?, ret_k=? WHERE id=?",
+            (outcome, float(ret_k), int(ex_id)),
+        )
+        labeled += 1
+
+    conn.commit()
+    conn.close()
+    return labeled
+
+
+def compute_roundtrip_pnls():
+    """
+    Rejoue tous les trades en FIFO et donne le PnL réalisé de CHAQUE SELL comme une série.
+    """
+    rows = get_all_trades()
+    lots = deque()  # [qty_restante, cout_total]
+    pnls = []
+    for t in rows:
+        side = t["side"]
+        px = t["price"]
+        qty = t["qty"]
+        fee = t["fee"]
+        if side == "buy":
+            lots.append([qty, px * qty + fee])
+        elif side == "sell":
+            remain = qty
+            proceeds = px * qty - fee
+            alloc_cost = 0.0
+            while remain > 1e-12 and lots:
+                lqty, lcost = lots[0]
+                use = min(lqty, remain)
+                unit_cost = (lcost / lqty) if lqty > 0 else 0.0
+                alloc_cost += unit_cost * use
+                lqty -= use
+                remain -= use
+                if lqty <= 1e-12:
+                    lots.popleft()
+                else:
+                    lots[0][0] = lqty
+                    lots[0][1] = unit_cost * lqty
+            pnl = proceeds - alloc_cost
+            pnls.append(float(pnl))
+    return pnls
+
+
+def _streaks(seq: Iterable[Union[int, float, bool]], zero_break: bool = False):
+    """
+    Calcule les séries gagnantes/perdantes.
+    - seq: nombres (>,<,=0) ou booléens (True=win, False=loss)
+    - zero_break: si True, un 0 casse les séries; si False, il n'affecte pas.
+
+    Retourne: (win_streak_max, loss_streak_max, win_streak_curr, loss_streak_curr)
+    """
+    wmax = lmax = wc = lc = 0
+
+    for x in seq:
+        # Normalise en signe s ∈ {-1,0,+1}
+        if isinstance(x, bool):
+            s = 1 if x else -1
+        else:
+            try:
+                v = float(x)
+            except Exception:
+                continue  # ignore éléments illisibles
+            s = 1 if v > 0 else (-1 if v < 0 else 0)
+
+        if s > 0:
+            wc += 1
+            lc = 0
+        elif s < 0:
+            lc += 1
+            wc = 0
+        else:  # s == 0 (neutre)
+            if zero_break:
+                wc = lc = 0
+            # sinon on ne touche pas aux compteurs
+
+        if wc > wmax:
+            wmax = wc
+        if lc > lmax:
+            lmax = lc
+
+    return wmax, lmax, wc, lc
+
+
+def compute_kpis():
+    pnls = compute_roundtrip_pnls()
+    n = len(pnls)
+    if n == 0:
+        hr50 = hr200 = None
+        exp = None
+        pf = None
+        wst = lst = wc = lc = 0
+        slip_avg = None
+    else:
+        # hit-rate sur exemples (tp/sl) si dispo, sinon sur pnls>0
+        ex = _q(
+            "SELECT outcome FROM examples WHERE outcome IS NOT NULL ORDER BY id DESC LIMIT 200"
+        )
+        lab = [r[0] for r in ex]
+
+        def _hr(arr, k):
+            arrk = arr[-k:] if len(arr) >= k else arr
+            if not arrk:
+                return None
+            wins = sum(1 for x in arrk if x == "tp")
+            losses = sum(1 for x in arrk if x == "sl")
+            denom = wins + losses
+            if denom == 0:
+                return None
+            return wins / denom
+
+        hr50 = _hr(lab, 50)
+        hr200 = _hr(lab, 200)
+        exp = sum(pnls) / n
+        pos = sum(p for p in pnls if p > 0)
+        neg = sum(p for p in pnls if p < 0)
+        pf = (pos / abs(neg)) if neg < 0 else None
+        signs = [1 if p > 0 else (-1 if p < 0 else 0) for p in pnls]
+        wst, lst, wc, lc = _streaks(signs)
+        slips = _q("SELECT slippage FROM trades WHERE slippage IS NOT NULL")
+        slip_vals = [float(r[0] or 0.0) for r in slips]
+        slip_avg = (sum(slip_vals) / len(slip_vals)) if slip_vals else None
+    return {
+        "roundtrips": n,
+        "hit_rate_50": hr50,
+        "hit_rate_200": hr200,
+        "expectancy_net_per_trade": exp,
+        "profit_factor": pf,
+        "win_streak_max": wst,
+        "loss_streak_max": lst,
+        "win_streak_curr": wc,
+        "loss_streak_curr": lc,
+        "slippage_avg": slip_avg,
+    }
+
+
+def _q(sql: str, params: tuple = ()) -> list[dict]:
+    """
+    Retourne une liste de dicts. Robuste même si row_factory n'est pas sqlite3.Row.
+    """
+    with get_db() as conn:
+        cur = conn.execute(sql, params)
+        rows = cur.fetchall()
+        if not rows:
+            return []
+        # Si on a des sqlite3.Row -> dict direct
+        if isinstance(rows[0], sqlite3.Row):
+            return [dict(r) for r in rows]
+        # Sinon reconstruire via cur.description
+        cols = [c[0] for c in cur.description] if cur.description else []
+        return [dict(zip(cols, r)) for r in rows]
+
+
+def _query_one(sql: str, params: tuple = ()) -> dict | None:
+    """
+    Retourne un seul dict (la première ligne) ou None.
+    """
+    rows = _q(sql, params)
+    return rows[0] if rows else None
+
+
+def _exec(sql, args=()):
+    with get_db() as c:
+        c.execute(sql, args)
+        c.commit()
+
+
+def ensure_bandit_schema():
+    """Assure le schéma moderne (id,pulls,reward_sum,last_update,cfg_json). Drop & recreate si mismatch."""
+    conn = get_db()
+    c = conn.cursor()
+    cols = [r["name"] for r in c.execute("PRAGMA table_info(bandit_arms)").fetchall()]
+    need = {"id", "pulls", "reward_sum", "last_update", "cfg_json"}
+    if cols and not need.issubset(set(cols)):
+        c.execute("DROP TABLE IF EXISTS bandit_arms")
+        conn.commit()
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS bandit_arms(
+      id TEXT PRIMARY KEY,
+      pulls INTEGER DEFAULT 0,
+      reward_sum REAL DEFAULT 0.0,
+      last_update REAL DEFAULT 0.0,
+      cfg_json TEXT
+    )"""
+    )
+    conn.commit()
+    conn.close()
+
+
+def init_db():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS trades(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        side TEXT NOT NULL,
+        price REAL NOT NULL,
+        qty REAL NOT NULL,
+        fee REAL NOT NULL
+    )"""
+    )
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS snapshots(
+        ts INTEGER PRIMARY KEY,
+        cash REAL NOT NULL,
+        btc REAL NOT NULL,
+        valuation REAL NOT NULL
+    )"""
+    )
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS kv(
+        k TEXT PRIMARY KEY,
+        v TEXT
+    )"""
+    )
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS examples(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts REAL,
+      price REAL,
+      reddit_avg REAL,
+      twitter_ema REAL,
+      sig_tech REAL,
+      atr_pct REAL,
+      ema_slope REAL,
+      hour_of_day INTEGER,
+      vol_norm REAL,
+      p_up REAL,
+      tp_pct REAL,
+      sl_pct REAL,
+      decision TEXT,
+      outcome TEXT,
+      ret_k REAL,
+      slippage REAL
+    )"""
+    )
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS risk_daily(
+      yyyy_mm_dd TEXT PRIMARY KEY,
+      realized_pnl REAL DEFAULT 0.0,
+      losses_streak INTEGER DEFAULT 0,
+      blocked_until REAL DEFAULT 0.0,
+      hit_today INTEGER DEFAULT 0,
+      baseline_valuation REAL DEFAULT NULL
+    )"""
+    )
+    conn.commit()
+    conn.close()
+    ensure_bandit_schema()
+
+
+def migrate_snapshots_to_modern():
+    conn = get_db()
+    c = conn.cursor()
+    cols = [tuple(r) for r in c.execute("PRAGMA table_info(snapshots)").fetchall()]
+    # si ancien schéma exactement: ts,cash,btc,valuation et ts est PK
+    if cols and len(cols) == 4 and cols[0][1] == "ts" and cols[0][5] == 1:
+        c.executescript(
+            """
+        BEGIN;
+        CREATE TABLE IF NOT EXISTS snapshots_new(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts REAL NOT NULL,
+          price REAL,
+          cash REAL,
+          position_qty REAL,
+          btc REAL,
+          valuation REAL,
+          realized_pnl REAL,
+          unrealized_pnl REAL
+        );
+        INSERT INTO snapshots_new(ts,cash,btc,valuation)
+        SELECT CAST(ts AS REAL), cash, btc, valuation FROM snapshots;
+        DROP TABLE snapshots;
+        ALTER TABLE snapshots_new RENAME TO snapshots;
+        CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON snapshots(ts);
+        COMMIT;
+        """
+        )
+    conn.commit()
+    conn.close()
+
+    # au boot :
+    init_db()  # (existant) crée les tables si besoin
+    migrate_snapshots_to_modern()
+    # optionnel mais conseillé
+    ensure_schema()
+
+
+def _ensure_columns(conn, table, wanted_cols):
+    """Ajoute les colonnes manquantes (type = REAL par défaut sauf précision)."""
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info({table})")
+    have = {row[1] for row in cur.fetchall()}  # row[1] = name
+    for name, coltype in wanted_cols:
+        if name not in have:
+            try:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {name} {coltype}")
+                print(f"[migrate] {table}: added column {name} {coltype}")
+            except Exception as e:
+                print(f"[migrate] warn: cannot add {name} to {table}: {e}")
+    conn.commit()
+
+
+def insert_trade(ts: int, side: str, price: float, qty: float, fee: float):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO trades(ts,side,price,qty,fee) VALUES(?,?,?,?,?)",
+        (int(ts), str(side), float(price), float(qty), float(fee)),
+    )
+    conn.commit()
+    conn.close()
+
+    # métrique best effort
+    try:
+        TRADES_TOTAL.labels(side=str(side)).inc()
+    except Exception:
+        pass
+
+
+def get_trades(limit: int = 1000):
+    conn = get_db()
+    c = conn.cursor()
+    rows = c.execute(
+        """
+      SELECT id, ts, side,
+             COALESCE(price,0.0) AS price,
+             COALESCE(qty,0.0)   AS qty,
+             COALESCE(fee,0.0)   AS fee,
+             order_type,
+             COALESCE(maker,0)   AS maker,
+             COALESCE(slippage,0.0) AS slippage
+      FROM trades ORDER BY ts ASC LIMIT ?
+    """,
+        (int(limit),),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def account_snapshot_write(*args, **kwargs):
+    """
+    Accepte soit (cash, btc, valuation), soit des kwargs/dict avec price/cash/position_qty/btc/valuation.
+    Écrit dans snapshots quel que soit le schéma (riche ou simple).
+    """
+    # 1) Normalise les entrées
+    if args and len(args) == 3 and not kwargs:
+        cash, btc, valuation = map(float, args)
+        ts = time.time()
+        price = None
+        pos_qty = float(btc)
+    else:
+        # kwargs ou dict
+        payload = (
+            dict(args[0]) if (args and isinstance(args[0], dict)) else dict(kwargs)
+        )
+        ts = float(payload.get("ts") or time.time())
+        price = payload.get("price")
+        cash = float(payload.get("cash") or 0.0)
+        pos_qty = float(
+            payload.get("position_qty")
+            if payload.get("position_qty") is not None
+            else payload.get("btc") or 0.0
+        )
+        valuation = float(
+            payload.get("valuation") or (cash + pos_qty * float(price or 0.0))
+        )
+
+    # 2) Détecte les colonnes disponibles
+    conn = get_db()
+    c = conn.cursor()
+    cols = {r[1] for r in c.execute("PRAGMA table_info(snapshots)").fetchall()}
+
+    # 3) Écrit en priorité le schéma riche, sinon le schéma simple
+    try:
+        if {"ts", "price", "cash", "position_qty", "valuation"}.issubset(cols):
+            c.execute(
+                """
+              INSERT INTO snapshots(ts, price, cash, position_qty, btc, valuation, realized_pnl, unrealized_pnl)
+              VALUES (?,?,?,?,?,?,?,?)
+            """,
+                (
+                    float(ts),
+                    float(price or 0.0),
+                    float(cash),
+                    float(pos_qty),
+                    float(pos_qty),
+                    float(valuation),
+                    None,
+                    None,
+                ),
+            )
+        else:
+            # schéma minimal (historique)
+            # assure la colonne btc si présente; sinon on mappe sur position_qty
+            if {"ts", "cash", "btc", "valuation"}.issubset(cols):
+                c.execute(
+                    "INSERT OR REPLACE INTO snapshots(ts,cash,btc,valuation) VALUES(?,?,?,?)",
+                    (float(ts), float(cash), float(pos_qty), float(valuation)),
+                )
+            else:
+                # dernier filet : au moins price/ts pour que le prix vive
+                c.execute("CREATE TABLE IF NOT EXISTS snapshots(ts REAL, price REAL)")
+                c.execute(
+                    "INSERT INTO snapshots(ts,price) VALUES(?,?)",
+                    (float(ts), float(price or 0.0)),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _reddit_oauth_token():
+    cid = os.getenv("REDDIT_CLIENT_ID", "").strip()
+    csec = os.getenv("REDDIT_CLIENT_SECRET", "").strip()
+    ua = os.getenv("REDDIT_USER_AGENT", "trading-bot/1.0 by YOU").strip()
+    user = os.getenv("REDDIT_USERNAME", "").strip()
+    pwd = os.getenv("REDDIT_PASSWORD", "").strip()
+    if not (cid and csec and ua and user and pwd):
+        # Essaye client_credentials si le flow password échoue
+        try:
+            auth = requests.auth.HTTPBasicAuth(cid, csec)
+            data = {"grant_type": "client_credentials"}
+            headers = {"User-Agent": ua}
+            r = _HTTP.post(
+                "https://www.reddit.com/api/v1/access_token",
+                auth=auth,
+                data=data,
+                headers=headers,
+                timeout=10,
+            )
+            r.raise_for_status()
+            j = r.json()
+            return j.get("access_token"), ua
+        except Exception:
+            return None, None
+
+    try:
+        auth = requests.auth.HTTPBasicAuth(cid, csec)
+        data = {"grant_type": "password", "username": user, "password": pwd}
+        headers = {"User-Agent": ua}
+        r = _HTTP.post(
+            "https://www.reddit.com/api/v1/access_token",
+            auth=auth,
+            data=data,
+            headers=headers,
+            timeout=10,
+        )
+        r.raise_for_status()
+        j = r.json()
+        return j.get("access_token"), ua
+    except Exception:
+        return None, None
+
+
+def _fetch_subreddit_titles(token: str, ua: str, sub: str, limit=50):
+    url = f"https://oauth.reddit.com/r/{sub}/new"
+    headers = {"Authorization": f"bearer {token}", "User-Agent": ua}
+    params = {"limit": min(limit, 100)}
+    try:
+        r = _HTTP.get(url, headers=headers, params=params, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        items = []
+        for c in data.get("data", {}).get("children") or []:
+            d = c.get("data") or {}
+            title = d.get("title") or ""
+            permalink = d.get("permalink") or ""
+            url_post = "https://reddit.com" + permalink if permalink else None
+            created_utc = d.get("created_utc")
+            items.append(
+                {
+                    "title": title,
+                    "url": url_post,
+                    "created_utc": created_utc,
+                    "subreddit": sub,
+                }
+            )
+        return items
+    except Exception:
+        return []
+
+
+def _headline_score_reddit(title: str) -> float:
+    if not title:
+        return 0.0
+    t = title.lower()
+    score = sum(1 for w in _POS_R if w in t) - sum(1 for w in _NEG_R if w in t)
+    return max(-3, min(3, score)) / 3.0
+
+
+def compute_reddit_sentiment() -> dict:
+    token, ua = _reddit_oauth_token()
+    if not token:
+        # --- Fallback démo si aucun identifiant Reddit n'est fourni ---
+        scores = [random.uniform(-0.6, 0.6) for _ in range(40)]
+        avg = float(sum(scores) / len(scores))
+        med = float(statistics.median(scores))
+        # on fabrique des "top" synthétiques pour l'UI
+        top_pos_vals = sorted(scores, reverse=True)[:5]
+        top_neg_vals = sorted(scores)[:5]
+        top_pos = [
+            {
+                "title": "(demo) positif",
+                "url": None,
+                "score": float(s),
+                "subreddit": "demo",
+            }
+            for s in top_pos_vals
+        ]
+        top_neg = [
+            {
+                "title": "(demo) négatif",
+                "url": None,
+                "score": float(s),
+                "subreddit": "demo",
+            }
+            for s in top_neg_vals
+        ]
+        return {
+            "avg": avg,
+            "median": med,
+            "count": len(scores),
+            "per_sub": [
+                {"subreddit": "demo", "count": len(scores), "avg": avg, "median": med}
+            ],
+            "top_positive": top_pos,
+            "top_negative": top_neg,
+        }
+
+    # --- Flux réel via OAuth Reddit si creds présents ---
+    subs_env = os.getenv("REDDIT_SUBS", "bitcoin,CryptoCurrency,btc,BitcoinMarkets")
+    subs = [s.strip() for s in subs_env.split(",") if s.strip()]
+    per_sub, all_items = [], []
+    for sub in subs:
+        items = _fetch_subreddit_titles(token, ua, sub, limit=50)
+        for it in items:
+            it["score"] = _headline_score_reddit(it["title"])
+        scores = [it["score"] for it in items]
+        per_sub.append(
+            {
+                "subreddit": sub,
+                "count": len(scores),
+                "avg": (sum(scores) / len(scores)) if scores else 0.0,
+                "median": (statistics.median(scores) if scores else 0.0),
+            }
+        )
+        all_items.extend(items)
+
+    scores_all = [it["score"] for it in all_items]
+    avg = float(sum(scores_all) / len(scores_all)) if scores_all else 0.0
+    med = float(statistics.median(scores_all)) if scores_all else 0.0
+    top_pos = sorted(all_items, key=lambda x: x["score"], reverse=True)[:5]
+    top_neg = sorted(all_items, key=lambda x: x["score"])[:5]
+    return {
+        "avg": avg,
+        "median": med,
+        "count": len(scores_all),
+        "per_sub": per_sub,
+        "top_positive": [
+            {
+                "title": x["title"],
+                "url": x["url"],
+                "score": x["score"],
+                "subreddit": x["subreddit"],
+            }
+            for x in top_pos
+        ],
+        "top_negative": [
+            {
+                "title": x["title"],
+                "url": x["url"],
+                "score": x["score"],
+                "subreddit": x["subreddit"],
+            }
+            for x in top_neg
+        ],
+    }
+
+
+def _clean_reddit_payload(res: dict) -> dict:
+    def _as_float(x, default=0.0):
+        try:
+            return float(re.search(r"-?\d+(?:\.\d+)?", str(x)).group(0))
+        except Exception:
+            return float(default)
+
+    out = dict(res or {})
+    out["avg"] = _as_float(out.get("avg"), 0.0)
+    out["median"] = _as_float(out.get("median"), 0.0)
+    out["count"] = int(out.get("count") or 0)
+    ps = out.get("per_sub") or []
+    out["per_sub"] = [
+        {
+            "subreddit": it.get("subreddit"),
+            "count": int(it.get("count") or 0),
+            "avg": _as_float(it.get("avg"), 0.0),
+            "median": _as_float(it.get("median"), 0.0),
+        }
+        for it in ps
+    ]
+
+    def _clean_top(lst):
+        outl = []
+        for it in lst or []:
+            outl.append(
+                {
+                    "title": it.get("title"),
+                    "url": it.get("url"),
+                    "subreddit": it.get("subreddit"),
+                    "score": _as_float(it.get("score"), 0.0),
+                }
+            )
+        return outl
+
+    out["top_positive"] = _clean_top(out.get("top_positive"))
+    out["top_negative"] = _clean_top(out.get("top_negative"))
+    return out
+
+
+def _normalize_symbol(sym: str) -> str:
+    s = (sym or "BTC/USDT").upper()
+    if "/" in s:
+        return s
+    if s.endswith("USDT"):
+        return s[:-4] + "/USDT"
+    if s.endswith("BUSD"):
+        return s[:-4] + "/BUSD"
+    return s
+
+
+def fetch_ohlc(symbol: str, interval: str, limit: int):
+    """OHLC via ccxt, fallback synthétique si indispo."""
+    market = _normalize_symbol(symbol)
+    try:
+        if ccxt is not None:
+            ex = ccxt.binance(
+                {"enableRateLimit": True, "options": {"adjustForTimeDifference": True}}
+            )
+            ex.timeout = 10_000
+            rows = ex.fetch_ohlcv(market, timeframe=interval, limit=limit)
+            return [
+                {"t": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4]}
+                for r in rows
+            ]
+    except Exception:
+        pass
+    # fallback synthétique
+    now_ms = int(time.time() * 1000)
+    base = float(STATE.get("price", 30000.0))
+    items = _synthetic_ohlc(limit, base, _interval_ms(interval), now_ms)
+    return [
+        {
+            "t": it["t"],
+            "open": it["o"],
+            "high": it["h"],
+            "low": it["l"],
+            "close": it["c"],
+        }
+        for it in items
+    ]
+
+
+def _reddit_sentiment_avg_cached() -> float:
+    """Cache léger pour l’avg reddit (utilisé par la stratégie)."""
+    now = time.time()
+    try:
+        res = _REDDIT_CACHE.get("res")
+        ts = float(_REDDIT_CACHE.get("ts") or 0)
+        if (now - ts) < float(_REDDIT_TTL) and isinstance(res, dict):
+            return float(res.get("avg") or 0.0)
+        res = compute_reddit_sentiment()
+        clean = _clean_reddit_payload(res)
+        _REDDIT_CACHE["ts"] = now
+        _REDDIT_CACHE["res"] = clean
+        return float(clean.get("avg") or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _interval_ms(interval: str) -> int:
+    m = {
+        "1m": 60000,
+        "3m": 180000,
+        "5m": 300000,
+        "15m": 900000,
+        "30m": 1800000,
+        "1h": 3600000,
+        "2h": 7200000,
+        "4h": 14400000,
+        "6h": 21600000,
+        "12h": 43200000,
+        "1d": 86400000,
+    }
+    return m.get(interval, 60000)
+
+
+def _synthetic_ohlc(limit: int, base_price: float, interval_ms: int, now_ms: int):
+    price = base_price or 30000.0
+    out = []
+    for i in range(limit):
+        t = now_ms - (limit - i) * interval_ms
+        drift = random.uniform(-0.003, 0.003)
+        o = price
+        price = max(1.0, price * (1.0 + drift))
+        c = price
+        h = max(o, c) * (1.0 + random.uniform(0.0, 0.002))
+        l = min(o, c) * (1.0 - random.uniform(0.0, 0.002))
+        v = abs((c - o) / max(1.0, o)) * 10
+        out.append(
+            {
+                "t": t,
+                "o": round(o, 2),
+                "h": round(h, 2),
+                "l": round(l, 2),
+                "c": round(c, 2),
+                "v": round(v, 4),
+            }
+        )
+    return out
+
+
+def binance_spot_price_real(symbol=None) -> Optional[float]:
+    try:
+        if ccxt is None:
+            return None
+        ex = ccxt.binance({"enableRateLimit": True})
+        t = ex.fetch_ticker(_normalize_symbol(symbol))
+        px = t.get("last") or t.get("close") or t.get("bid") or t.get("ask")
+        return float(px) if px is not None else None
+    except Exception:
+        return None
+
+
+def get_latest_price() -> Optional[float]:
+    # 1) ccxt (si dispo)
+    px = binance_spot_price_real(SYMBOL)
+    if px is not None and px > 0:
+        set_price(px, source="market")
+        return float(px)
+
+    # 2) HTTP simple (Binance/CB) — pas besoin de ccxt
+    px = http_price_any(SYMBOL)
+    if px is not None and px > 0:
+        set_price(px, source="market")
+        return float(px)
+
+    # 3) Dernier OHLC connu s'il existe (si /api/price/ohlc a été appelé)
+    try:
+        items = LAST_OHLC.get("items") or []
+        if items:
+            c = float(items[-1].get("c") or items[-1].get("close") or 0.0)
+            if c > 0:
+                set_price(c, source="market")
+                return float(c)
+    except Exception:
+        pass
+
+    # 4) Fallback: NE PAS recalculer price_chg; renvoyer juste la valeur actuelle
+    return float(STATE.get("price", 30000.0))
+
+
+def _atr(ohlc, win=14):
+    trs = []
+    prev = None
+    for r in ohlc:
+        h, l, c_prev = r["high"], r["low"], (prev["close"] if prev else r["close"])
+        tr = max(h - l, abs(h - c_prev), abs(l - c_prev))
+        trs.append(tr)
+        prev = r
+    atr_series = _ema(trs, win)
+    return atr_series[-1] if atr_series else None
+
+
+def _rsi(closes, win=14):
+    if len(closes) < win + 1:
+        return None
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        d = closes[i] - closes[i - 1]
+        gains.append(max(0, d))
+        losses.append(max(0, -d))
+        # simple (pas de Wilder)
+    avg_g = sum(gains[-win:]) / win
+    avg_l = sum(losses[-win:]) / win
+    if avg_l == 0:
+        return 100.0
+    rs = avg_g / avg_l
+    return 100 - (100 / (1 + rs))
+
+
+def _tech_signal(items):
+    closes = [r["close"] for r in items]
+    ema_fast_hist = _ema(closes, 12)
+    ema_slow_hist = _ema(closes, 48)
+    ema_fast = ema_fast_hist[-1] if ema_fast_hist else None
+    ema_slow = ema_slow_hist[-1] if ema_slow_hist else None
+    atr = _atr(items, 14)
+    rsi = _rsi(closes, 14)
+    price = closes[-1] if closes else 0.0
+    sig = 0.0
+    if ema_fast is not None and ema_slow is not None and price > 0:
+        sig = (ema_fast - ema_slow) / price
+    return sig, {
+        "ema_fast": ema_fast,
+        "ema_slow": ema_slow,
+        "atr": atr,
+        "rsi": rsi,
+        "ema_fast_hist": ema_fast_hist,
+    }
+
+
+def _twitter_sentiment_avg_cached() -> float:
+    now = time.time()
+    ts = float(_TW_CACHE.get("ts") or 0)
+    res = _TW_CACHE.get("res") or {}
+    if (now - ts) > 120:
+        ex = [{"score": round(random.uniform(-1, 1), 3)} for _ in range(8)]
+        _TW_CACHE["res"] = {
+            "avg": sum(x["score"] for x in ex) / len(ex),
+            "median": 0.0,
+            "count": len(ex),
+        }
+        _TW_CACHE["ts"] = now
+    return float((_TW_CACHE.get("res") or {}).get("avg") or 0.0)
+
+
+def _sigmoid(x, k):
+    try:
+        return 1.0 / (1.0 + math.exp(-k * x))
+    except OverflowError:
+        return 1.0 if x > 0 else 0.0
+
+
+def examples_insert(**kw):
+    # outcome/ret_k restent NULL au moment de l’insert
+    cols = [
+        "ts",
+        "price",
+        "reddit_avg",
+        "twitter_ema",
+        "sig_tech",
+        "atr_pct",
+        "ema_slope",
+        "hour_of_day",
+        "vol_norm",
+        "p_up",
+        "tp_pct",
+        "sl_pct",
+        "decision",
+        "slippage",
+    ]
+    vals = [kw.get(k) for k in cols]
+    conn = get_db()
+    c = conn.cursor()
+    c.execute(
+        f"INSERT INTO examples({','.join(cols)}) VALUES({','.join(['?']*len(cols))})",
+        vals,
+    )
+    conn.commit()
+    conn.close()
+
+
+def examples_label_last(outcome: str, ret_k: float):
+    sql = """
+      UPDATE examples SET outcome=?, ret_k=?
+      WHERE id=(SELECT id FROM examples WHERE outcome IS NULL ORDER BY id DESC LIMIT 1)
+    """
+    conn = get_db()
+    c = conn.cursor()
+    c.execute(sql, (str(outcome), float(ret_k)))
+    conn.commit()
+    conn.close()
+
+
+def _risk_row_today():
+    k = date.today().isoformat()
+    conn = get_db()
+    c = conn.cursor()
+    row = c.execute("SELECT * FROM risk_daily WHERE yyyy_mm_dd=?", (k,)).fetchone()
+    if not row:
+        base = get_account_snapshot_safe().get("valuation", 0.0)
+        c.execute(
+            "INSERT INTO risk_daily(yyyy_mm_dd, baseline_valuation) VALUES(?,?)",
+            (k, base),
+        )
+        conn.commit()
+        row = c.execute("SELECT * FROM risk_daily WHERE yyyy_mm_dd=?", (k,)).fetchone()
+    conn.close()
+    return dict(row)
+
+
+def risk_update_and_check():
+    with RISK_LOCK:
+        row = _risk_row_today()
+        now = time.time()
+        blocked_until = float(row.get("blocked_until") or 0.0)
+        blocked = now < blocked_until
+        return {
+            "day": row["yyyy_mm_dd"],
+            "blocked": blocked,
+            "blocked_until": blocked_until,
+            "losses_streak": int(row.get("losses_streak") or 0),
+            "hit_today": bool(row.get("hit_today")),
+            "limits": {
+                "daily_loss_pct": float(_PARAMS.get("DAILY_LOSS_LIMIT_PCT", 0.1)),
+                "daily_loss_abs": float(_PARAMS.get("DAILY_LOSS_LIMIT_QUOTE", 0.0)),
+                "cooloff_minutes": float(_PARAMS.get("COOLOFF_MINUTES", 45)),
+                "max_consecutive_losses": int(_PARAMS.get("MAX_CONSECUTIVE_LOSSES", 3)),
+            },
+        }
+
+
+def risk_block_for_cooloff():
+    with RISK_LOCK:
+        now = time.time()
+        cool = float(_PARAMS.get("COOLOFF_MINUTES", 45)) * 60.0
+        until = now + cool
+        k = date.today().isoformat()
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "UPDATE risk_daily SET blocked_until=? WHERE yyyy_mm_dd=?", (until, k)
+        )
+        conn.commit()
+        conn.close()
+        return until
+
+
+def risk_on_trade_result(pnl_value_quote: float):
+    with RISK_LOCK:
+        k = date.today().isoformat()
+        conn = get_db()
+        c = conn.cursor()
+        row = c.execute(
+            "SELECT realized_pnl, losses_streak, baseline_valuation FROM risk_daily WHERE yyyy_mm_dd=?",
+            (k,),
+        ).fetchone()
+        realized = float(row["realized_pnl"] or 0.0) + float(pnl_value_quote)
+        ls = int(row["losses_streak"] or 0)
+        ls = 0 if pnl_value_quote > 0 else (ls + 1)
+        hit = 0
+        base = float(
+            row["baseline_valuation"] or 0.0
+        ) or get_account_snapshot_safe().get("valuation", 0.0)
+        limit_pct = float(_PARAMS.get("DAILY_LOSS_LIMIT_PCT", 0.1))
+        limit_abs = float(_PARAMS.get("DAILY_LOSS_LIMIT_QUOTE", 0.0))
+        loss_pct = (-realized) / base if base > 0 else 0.0
+        if (limit_abs > 0 and -realized >= limit_abs) or (
+            limit_pct > 0 and loss_pct >= limit_pct
+        ):
+            hit = 1
+        c.execute(
+            "UPDATE risk_daily SET realized_pnl=?, losses_streak=?, hit_today=? WHERE yyyy_mm_dd=?",
+            (realized, ls, hit, k),
+        )
+        conn.commit()
+        conn.close()
+        if hit or (ls >= int(_PARAMS.get("MAX_CONSECUTIVE_LOSSES", 3))):
+            return risk_block_for_cooloff()
+        return None
+
+
+def bandit_seed_default(reset=False):
+    if reset:
+        _exec("DELETE FROM bandit_arms", ())
+    rows = _q("SELECT COUNT(*) AS n FROM bandit_arms")
+    if rows and rows[0].get("n", 0) > 0 and not reset:
+        return
+    presets = [
+        (
+            "arm_A",
+            {
+                "PBUY": 0.60,
+                "PSELL": 0.42,
+                "TP_ATR_MULT": 0.6,
+                "SL_ATR_MULT": 0.6,
+                "MIN_EV_NET": 0.000,
+            },
+        ),
+        (
+            "arm_B",
+            {
+                "PBUY": 0.62,
+                "PSELL": 0.40,
+                "TP_ATR_MULT": 0.7,
+                "SL_ATR_MULT": 0.6,
+                "MIN_EV_NET": 0.001,
+            },
+        ),
+        (
+            "arm_C",
+            {
+                "PBUY": 0.64,
+                "PSELL": 0.40,
+                "TP_ATR_MULT": 0.8,
+                "SL_ATR_MULT": 0.6,
+                "MIN_EV_NET": 0.001,
+            },
+        ),
+        (
+            "arm_D",
+            {
+                "PBUY": 0.66,
+                "PSELL": 0.38,
+                "TP_ATR_MULT": 0.7,
+                "SL_ATR_MULT": 0.7,
+                "MIN_EV_NET": 0.002,
+            },
+        ),
+        (
+            "arm_E",
+            {
+                "PBUY": 0.68,
+                "PSELL": 0.36,
+                "TP_ATR_MULT": 0.9,
+                "SL_ATR_MULT": 0.7,
+                "MIN_EV_NET": 0.003,
+            },
+        ),
+        (
+            "arm_F",
+            {
+                "PBUY": 0.70,
+                "PSELL": 0.35,
+                "TP_ATR_MULT": 1.0,
+                "SL_ATR_MULT": 0.8,
+                "MIN_EV_NET": 0.003,
+            },
+        ),
+    ]
+    now = time.time()
+    for arm_id, cfg in presets:
+        _exec(
+            "INSERT OR REPLACE INTO bandit_arms(id,pulls,reward_sum,last_update,cfg_json) VALUES(?,?,?,?,?)",
+            (arm_id, 0, 0.0, now, json.dumps(cfg)),
+        )
+
+
+def _bandit_fetch_all():
+    return _q("SELECT * FROM bandit_arms ORDER BY id")
+
+
+def bandit_choose_arm() -> Dict[str, Any]:
+    rows = _bandit_fetch_all()
+    if not rows:
+        bandit_seed_default(reset=False)
+        rows = _bandit_fetch_all()
+    if random.random() < float(_PARAMS.get("BANDIT_EPSILON", 0.03)):
+        return random.choice(rows)
+    n_total = sum(int(r["pulls"] or 0) for r in rows) or 1
+    best = None
+    best_ucb = -1e9
+    for r in rows:
+        pulls = max(1, int(r["pulls"] or 0))
+        mean = float(r.get("reward_sum") or 0.0) / pulls
+        ucb = mean + math.sqrt(2.0 * math.log(n_total) / pulls)
+        if ucb > best_ucb:
+            best_ucb, best = ucb, r
+    return best
+
+
+def bandit_update_reward(arm_id: str, reward: float):
+    now = time.time()
+    _exec(
+        "UPDATE bandit_arms SET pulls=pulls+1, reward_sum=reward_sum+?, last_update=? WHERE id=?",
+        (float(reward), now, str(arm_id or "")),
+    )
+
+
+def _costs_snapshot():
+    fee_buy = float(_PARAMS.get("FEE_RATE_BUY", 0.0010))
+    fee_sell = float(_PARAMS.get("FEE_RATE_SELL", 0.0010))
+    slip = float(_PARAMS.get("SLIPPAGE", 0.0005))
+    buf = float(_PARAMS.get("FEE_BUFFER_PCT", 0.0002))
+    prefer = bool(_PARAMS.get("PREFER_MAKER", True))
+    maker_fb = float(_PARAMS.get("MAKER_FEE_BUY", 0.0001))
+    maker_fs = float(_PARAMS.get("MAKER_FEE_SELL", 0.0001))
+    if prefer:
+        fee_buy, fee_sell, slip = maker_fb, maker_fs, 0.0
+    return {
+        "fee_buy": fee_buy,
+        "fee_sell": fee_sell,
+        "slip": slip,
+        "buf": buf,
+        "total": (fee_buy + fee_sell + 2 * slip + buf),
+    }
+
+
+def _apply_cost_floor_to_targets(tp_min, sl_min):
+    cs = _costs_snapshot()
+    floor_tp = max(float(tp_min), cs["total"] * 1.2)
+    floor_sl = max(float(sl_min), cs["total"])
+    return floor_tp, floor_sl, cs
+
+
+def _paper_buy(usd_amt: float, price: float = None):
+    """
+    Achat papier 'market' pour usd_amt.
+    Utilise apply_fill() => écrit trade + snapshot + STATE.
+    Retourne (qty, px, fee).
+    """
+    px = float(price or STATE.get("price") or get_latest_price() or 0.0)
+    if px <= 0.0 or usd_amt <= 0.0:
+        return 0.0, px, 0.0
+
+    fee_rate = float(_PARAMS.get("FEE_RATE_BUY", 0.001))
+    fee = float(usd_amt) * fee_rate
+    # On laisse apply_fill faire les clamps selon le cash réel
+    qty = max(0.0, (float(usd_amt) - fee) / max(px, 1e-12))
+    if qty <= 0.0:
+        return 0.0, px, 0.0
+
+    apply_fill("BUY", px, qty, fee)
+    return float(qty), float(px), float(fee)
+
+
+def _paper_sell(qty: float, price: float = None):
+    """
+    Vente papier 'market' d'une quantité demandée.
+    Retourne (qty_vendue, px_exec, fee). Tolérant à l'état mémoire/snapshot.
+    """
+    qty_req = max(0.0, float(qty or 0.0))
+    if qty_req <= 0.0:
+        return (0.0, float(STATE.get("price") or 0.0), 0.0)
+
+    # Prix robuste (live -> fallback mémoire -> fallback historique)
+    px = float(
+        price
+        or STATE.get("price")
+        or get_latest_price()
+        or _latest_price_fallback()
+        or 0.0
+    )
+    if px <= 0.0:
+        raise RuntimeError("no price for sell")
+
+    # Position disponible: max(STATE, snapshot) pour éviter qty=0 si snapshot en retard
+    snap = get_account_snapshot_safe() or {}
+    base_qty_state = float(STATE.get("position_qty") or 0.0)
+    base_qty_snap = float(snap.get("btc") or 0.0)
+    base_qty = max(base_qty_state, base_qty_snap)
+
+    q = min(qty_req, base_qty)
+    if q <= 1e-12:
+        return (0.0, px, 0.0)
+
+    fee_rate = float(_PARAMS.get("FEE_RATE_SELL", 0.001))
+    fee = px * q * fee_rate
+
+    apply_fill("SELL", px, q, fee=fee)
+    return (float(q), float(px), float(fee))
+
+
+def _paper_sell_all(price: float = None):
+    """Vente papier 'market' de TOUTE la position disponible.
+    Retourne (qty_vendue, px_exec, fee, pnl_value_estimee).
+    PNL estimée via coût moyen courant (FIFO approx).
+    """
+    # Position disponible: privilégie snapshot (robuste) puis STATE
+    snap = get_account_snapshot_safe() or {}
+    base_qty_state = float(STATE.get("position_qty") or 0.0)
+    base_qty_snap = float(snap.get("btc") or 0.0)
+    qty = max(base_qty_state, base_qty_snap)
+    if qty <= 1e-12:
+        return 0.0, float(STATE.get("price") or 0.0), 0.0, 0.0
+
+    # Prix robuste
+    px = float(
+        price
+        or STATE.get("price")
+        or get_latest_price()
+        or _latest_price_fallback()
+        or 0.0
+    )
+    if px <= 0.0:
+        raise RuntimeError("no price for sell_all")
+
+    # Estimation de PnL via coût moyen actuel (FIFO approx)
+    try:
+        _, _, pos_qty, pos_avg = _fifo_realized_pnl_and_position()
+        avg_cost = float(pos_avg or 0.0)
+    except Exception:
+        avg_cost = float(STATE.get("entry_price") or 0.0)
+
+    fee_rate = float(_PARAMS.get("FEE_RATE_SELL", 0.001))
+    fee = px * qty * fee_rate
+    apply_fill("SELL", px, qty, fee)
+
+    pnl_value = (px - avg_cost) * qty - fee
+    return float(qty), float(px), float(fee), float(pnl_value)
+
+
+def _recompute_pnl_last_sell(px_exe: float, qty_sold: float, fee: float) -> float:
+    """Approxime la PnL réalisée pour la DERNIÈRE vente.
+    Utilise le coût moyen courant en FIFO comme proxy (rapide & robuste).
+    """
+    try:
+        _, _, pos_qty, pos_avg = _fifo_realized_pnl_and_position()
+        avg_cost = float(pos_avg or 0.0)
+    except Exception:
+        avg_cost = float(STATE.get("entry_price") or 0.0)
+    try:
+        px = float(px_exe)
+        q = float(qty_sold)
+        f = float(fee or 0.0)
+    except Exception:
+        return 0.0
+    return (px - avg_cost) * q - f
+
+
+def _record_trace(
+    decision: str,
+    price: float,
+    qty: float,
+    p_up: float,
+    ev: float,
+    extra: Dict[str, Any] = None,
+):
+    """Enregistre une trace 'plate' (TRACE), une trace enrichie (DECISION_TRACE), et persiste en DB."""
+    meta = dict(extra or {})
+    rec = {
+        "time": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "decision": str(decision),
+        "price": float(price),
+        "qty": float(qty),
+        "p_up": float(p_up),
+        "ev": float(ev),
+        "lot_id": meta.get("lot_id"),
+        "meta": meta,  # tout le reste va sous meta
+    }
+
+    # 1) historique "plat" (legacy)
+    try:
+        TRACE.append(rec)
+        if len(TRACE) > 2000:
+            del TRACE[: len(TRACE) - 2000]
+    except Exception:
+        pass
+
+    # 2) historique enrichi (mémoire)
+    try:
+        DECISION_TRACE.append(
+            {
+                "t": time.time(),
+                "decision": rec["decision"],
+                "price": rec["price"],
+                "qty": rec["qty"],
+                "p_up": rec["p_up"],
+                "ev": rec["ev"],
+                "lot_id": rec["lot_id"],
+                "meta": rec["meta"],
+            }
+        )
+    except Exception:
+        pass
+
+    # 3) persistance DB (schéma avec meta_json, et on remplit aussi min_ev/exec)
+    conn = None
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        ts_now = time.time()
+        meta_json = json.dumps(meta, ensure_ascii=False)
+        min_ev = float(meta.get("min_ev") or meta.get("min_ev_net") or 0.0)
+        exec_str = str(meta.get("exec") or meta.get("reason") or "")
+
+        c.execute(
+            """
+            INSERT INTO decision_trace(ts, decision, price, qty, p_up, ev, min_ev, exec, meta_json)
+            VALUES (?,?,?,?,?,?,?,?,?)
+        """,
+            (
+                ts_now,
+                rec["decision"],
+                rec["price"],
+                rec["qty"],
+                rec["p_up"],
+                rec["ev"],
+                min_ev,
+                exec_str,
+                meta_json,
+            ),
+        )
+        conn.commit()
+    except Exception:
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+def decide_and_maybe_trade():
+    global LAST_ORDER_TS, ENTRY_PRICE, PEAK_PRICE, POSITION, LAST_TICK_TS
+
+    now = time.time()
+    LAST_TICK_TS = now
+
+    # --- Cooldown & limites ---
+    cooldown = float(_PARAMS.get("MIN_SECONDS_BETWEEN_ORDERS", 20))
+    max_per_hour = int(_PARAMS.get("MAX_ORDERS_PER_HOUR", 20))
+    while ORDERS_LAST_HOUR and (now - ORDERS_LAST_HOUR[0] > 3600):
+        ORDERS_LAST_HOUR.popleft()
+    if LAST_ORDER_TS and (now - LAST_ORDER_TS < cooldown):
+        _record_trace(
+            "hold",
+            float(STATE.get("price") or 0.0),
+            0.0,
+            float(STATE.get("p_up", 0.5)),
+            float(STATE.get("ev", 0.0)),
+            {"reason": "cooldown"},
+        )
+        if bool(_PARAMS.get("MULTI_TRADE_MODE", True)):
+            try:
+                ml_tick(
+                    float(STATE.get("price") or 0.0), float(STATE.get("p_up") or 0.5)
+                )
+            except Exception:
+                pass
+        return {"skipped": "cooldown"}
+    if len(ORDERS_LAST_HOUR) >= max_per_hour:
+        _record_trace(
+            "hold",
+            float(STATE.get("price") or 0.0),
+            0.0,
+            float(STATE.get("p_up", 0.5)),
+            float(STATE.get("ev", 0.0)),
+            {"reason": "max_per_hour"},
+        )
+        if bool(_PARAMS.get("MULTI_TRADE_MODE", True)):
+            try:
+                ml_tick(
+                    float(STATE.get("price") or 0.0), float(STATE.get("p_up") or 0.5)
+                )
+            except Exception:
+                pass
+        return {"skipped": "max_per_hour"}
+
+    # --- Risque global ---
+    rk = risk_update_and_check()
+    if rk.get("blocked"):
+        _record_trace(
+            "hold",
+            float(STATE.get("price") or 0.0),
+            0.0,
+            float(STATE.get("p_up", 0.5)),
+            float(STATE.get("ev", 0.0)),
+            {"reason": "risk_block"},
+        )
+        if bool(_PARAMS.get("MULTI_TRADE_MODE", True)):
+            try:
+                ml_tick(
+                    float(STATE.get("price") or 0.0), float(STATE.get("p_up") or 0.5)
+                )
+            except Exception:
+                pass
+        return {"skipped": "risk_block"}
+
+    # --- Données marché ---
+    price = float(get_latest_price() or 0.0)
+    try:
+        snapshot_now()
+    except Exception:
+        pass
+
+    items = fetch_ohlc(SYMBOL, "1m", 240)
+    if not items:
+        _record_trace(
+            "hold",
+            price,
+            0.0,
+            float(STATE.get("p_up", 0.5)),
+            float(STATE.get("ev", 0.0)),
+            {"reason": "no_ohlc"},
+        )
+        if bool(_PARAMS.get("MULTI_TRADE_MODE", True)):
+            try:
+                ml_tick(price, float(STATE.get("p_up") or 0.5))
+            except Exception:
+                pass
+        return {"skipped": "no_ohlc"}
+
+    sig_tech, indic = _tech_signal(items)
+    atr = indic.get("atr")
+    ema_fast = indic.get("ema_fast")
+    ema_slow = indic.get("ema_slow")
+    rsi_val = indic.get("rsi")
+    ema_slope = 0.0
+
+    # -- Rendez ces features visibles pour tri_patch --
+    STATE["sig_tech"] = float(sig_tech or 0.0)
+    STATE["ema_slope"] = float(ema_slope or 0.0)
+    STATE["atr_pct"] = float(atr / price) if (atr and price > 0) else 0.001
+    STATE["vol_norm"] = float(STATE["atr_pct"])
+    STATE["price"] = float(price)
+    try:
+        h = indic.get("ema_fast_hist") or []
+        if len(h) >= 3:
+            ema_slope = (h[-1] - h[-3]) / max(1e-9, abs(h[-3]))
+    except Exception:
+        pass
+
+    # =======================================================================
+    # --- Sentiment + Tri-classe + Sizing (patch) ---
+    p_up_patch, size_usdt_patch, skipped = apply_trade_patch(
+        STATE, _PARAMS, price, _costs_snapshot, _record_trace, kv_get
+    )
+    if skipped:
+        _record_trace(
+            "hold",
+            price,
+            0.0,
+            float(STATE.get("p_up", 0.5)),
+            float(STATE.get("ev", 0.0)),
+            {"reason": skipped},
+        )
+        if bool(_PARAMS.get("MULTI_TRADE_MODE", True)):
+            try:
+                ml_tick(price, float(STATE.get("p_up", 0.5)))
+            except Exception:
+                pass
+        return {"skipped": skipped}
+
+    # p_up final & EV
+    p_up = float(p_up_patch)
+    STATE["p_up"] = p_up
+    STATE["ev"] = float(p_up - 0.5)
+
+    try:
+        app.logger.info(
+            f"[tri] up={STATE.get('p_up',0):.3f} "
+            f"flat={STATE.get('p_flat',0):.3f} "
+            f"down={STATE.get('p_down',0):.3f}"
+        )
+    except Exception:
+        pass
+
+    # compat pour logs/examples_insert
+    reddit_avg = float(STATE.get("reddit_avg", 0.0))
+    tw_ema = float(STATE.get("twitter_ema", 0.0))
+    # =======================================================================
+
+    # --- Conditions vol ---
+    atr_pct = (float(atr) / price) if (atr and price > 0) else 0.0
+    vol_min = float(_PARAMS.get("VOL_MIN", 0.0025))
+    if atr_pct < vol_min and not LEARNING_MODE:
+        _record_trace(
+            "hold",
+            price,
+            0.0,
+            p_up,
+            STATE["ev"],
+            {"reason": "low_vol", "atr_pct": atr_pct},
+        )
+        if bool(_PARAMS.get("MULTI_TRADE_MODE", True)):
+            try:
+                ml_tick(price, p_up)
+            except Exception:
+                pass
+        return {"skipped": "low_vol"}
+
+    # --- Targets dynamiques de base ---
+    tp_pct = max(
+        float(_PARAMS.get("MIN_TP_PCT", 0.0105)),
+        (
+            (float(atr) / price) * float(_PARAMS.get("TP_ATR_MULT", 0.9))
+            if atr and price > 0
+            else 0.0105
+        ),
+    )
+    sl_pct = max(
+        float(_PARAMS.get("MIN_SL_PCT", 0.0065)),
+        (
+            (float(atr) / price) * float(_PARAMS.get("SL_ATR_MULT", 0.7))
+            if atr and price > 0
+            else 0.0065
+        ),
+    )
+
+    # --- Coûts: plancher TP ---
+    maker_bps = float(_PARAMS.get("COST_MAKER_BPS", 2.0))
+    taker_bps = float(_PARAMS.get("COST_TAKER_BPS", 5.0))
+    other_bps = float(_PARAMS.get("OTHER_COST_BPS", 2.0))
+    prefer_maker = bool(_PARAMS.get("PREFER_MAKER", True))
+
+    if prefer_maker:
+        roundtrip_bps = (maker_bps + maker_bps + other_bps) / 10000.0
+        net_margin = float(
+            _PARAMS.get("NET_MARGIN_PCT", 0.003)
+        )  # +0.3% net au-dessus des coûts
+        tp_floor = max(tp_pct, roundtrip_bps + net_margin)
+        tp_pct = max(tp_pct, tp_floor)
+    else:
+        roundtrip_bps = (taker_bps + taker_bps + other_bps) / 10000.0
+        fee_buffer_bps = float(_PARAMS.get("FEE_BUFFER_BPS", 5.0)) / 10000.0
+        must_cover = roundtrip_bps + fee_buffer_bps
+        tp_pct = max(tp_pct, must_cover)
+
+    # Plancher de coûts existant + EV_net
+    tp_pct, sl_pct, cs = _apply_cost_floor_to_targets(tp_pct, sl_pct)
+    total_cost = float(cs.get("total", 0.0))
+    ev_raw = float(p_up - 0.5)
+    ev_net = float(ev_raw - total_cost)
+    STATE["ev_net"] = float(ev_net)
+
+    # --- Bandit / seuils ---
+    arm = bandit_choose_arm()
+    arm_cfg = json.loads(arm.get("cfg_json") or "{}") if arm else {}
+    pbuy = float(arm_cfg.get("PBUY", _PARAMS.get("PBUY", 0.60)))
+    psell = float(arm_cfg.get("PSELL", _PARAMS.get("PSELL", 0.40)))
+    min_ev_net = float(arm_cfg.get("MIN_EV_NET", _PARAMS.get("MIN_EV_NET", 0.0003)))
+
+    # Bonus heures liquides
+    if datetime.utcnow().hour not in {12, 13, 14, 15, 16, 17, 18, 19, 20}:
+        pbuy = min(0.99, pbuy + float(_PARAMS.get("PBUY_OFF_HOURS_ADD", 0.03)))
+
+    # --- Trend & assouplissements apprentissage ---
+    if LEARNING_MODE:
+        trend_ok = True
+        min_ev_net = -9999.0
+        pbuy = 0.0
+    else:
+        ema_ok = (
+            ema_fast is not None
+            and ema_slow is not None
+            and float(ema_fast) >= float(ema_slow)
+        )
+        rsi_min = float(_PARAMS.get("RSI_MIN", 45.0))
+        rsi_ok = (rsi_val is None) or (rsi_min <= 0.0) or (float(rsi_val) >= rsi_min)
+        sig_ok = (sig_tech or 0.0) >= float(_PARAMS.get("TECH_TREND_MIN", 0.02))
+        trend_ok = ema_ok or (
+            sig_ok
+            and (atr_pct >= float(_PARAMS.get("VOL_MIN_HIGH", 0.0035)))
+            and rsi_ok
+        )
+
+    # --- Taille ordre ---
+    snap = get_account_snapshot_safe() or {}
+    cash = float(snap.get("cash") or 0.0)
+    base_buy_pct = float(_PARAMS.get("BUY_PCT", 0.25))
+    conv = 0.0 if p_up <= pbuy else min(1.0, (p_up - pbuy) / max(1e-9, 1.0 - pbuy))
+    buy_pct_eff = max(0.05, min(base_buy_pct, 0.10 + conv * base_buy_pct))
+    min_notional = float(os.getenv("RISK_MIN_ORDER_NOTIONAL", "10"))
+
+    # >>> override avec la taille calculée par le patch
+    size_usdt = float(size_usdt_patch)
+    usd_amt = max(min_notional, min(cash, size_usdt))
+
+    # mémos UI / status
+    STATE["last_size_suggested"] = float(size_usdt)  # taille "théorique" du patch
+    STATE["last_size_usdt"] = float(usd_amt)  # taille finale après contraintes
+    # <<<
+
+    # --- Guards d’entrée ---
+    if cash <= 0 or usd_amt > cash + 1e-9:
+        _record_trace(
+            "hold",
+            price,
+            0.0,
+            p_up,
+            STATE["ev"],
+            {"reason": "insufficient_cash", "cash": cash, "need": usd_amt},
+        )
+        if bool(_PARAMS.get("MULTI_TRADE_MODE", True)):
+            try:
+                ml_tick(price, p_up)
+            except Exception:
+                pass
+        return {"skipped": "insufficient_cash"}
+    if not trend_ok:
+        _record_trace("hold", price, 0.0, p_up, STATE["ev"], {"reason": "trend_not_ok"})
+        if bool(_PARAMS.get("MULTI_TRADE_MODE", True)):
+            try:
+                ml_tick(price, p_up)
+            except Exception:
+                pass
+        return {"skipped": "trend_not_ok"}
+    if p_up < pbuy:
+        _record_trace(
+            "hold",
+            price,
+            0.0,
+            p_up,
+            STATE["ev"],
+            {"reason": "p_up_below", "p_up": float(p_up), "pbuy": float(pbuy)},
+        )
+        if bool(_PARAMS.get("MULTI_TRADE_MODE", True)):
+            try:
+                ml_tick(price, p_up)
+            except Exception:
+                pass
+        return {"skipped": "p_up_below"}
+    if ev_net < min_ev_net:
+        _record_trace(
+            "hold",
+            price,
+            0.0,
+            p_up,
+            STATE["ev"],
+            {
+                "reason": "ev_below",
+                "ev_net": float(ev_net),
+                "min_ev_net": float(min_ev_net),
+            },
+        )
+        if bool(_PARAMS.get("MULTI_TRADE_MODE", True)):
+            try:
+                ml_tick(price, p_up)
+            except Exception:
+                pass
+        return {"skipped": "ev_below"}
+
+    # --- BUY (entrée initiale) ---
+    if not STATE.get("in_position"):
+        pre_px = price
+        qty, px, fee = _paper_buy(usd_amt)
+        if qty <= 0.0:
+            _record_trace(
+                "hold", price, 0.0, p_up, STATE["ev"], {"reason": "buy_qty_zero"}
+            )
+            if bool(_PARAMS.get("MULTI_TRADE_MODE", True)):
+                try:
+                    ml_tick(price, p_up)
+                except Exception:
+                    pass
+            return {"skipped": "buy_qty_zero"}
+
+        slippage = (px - pre_px) / pre_px if pre_px > 0 else 0.0
+
+        STATE["in_position"] = True
+        STATE["last_decision"] = "buy"
+        ENTRY_PRICE = px
+        STATE["entry_price"] = float(ENTRY_PRICE)
+        PEAK_PRICE = px
+        POSITION = {
+            "entry": px,
+            "opened_at": now,
+            "target_pct": tp_pct,
+            "stop_pct": sl_pct,
+            "arm_id": (arm["id"] if arm else None),
+        }
+        STATE["entries_count"] = 1
+        STATE["last_entry_price"] = px
+
+        lot_id = None
+        if bool(_PARAMS.get("MULTI_TRADE_MODE", True)):
+            try:
+                lot_id = ml_add_lot(
+                    qty, px, tp_pct, sl_pct, (arm["id"] if arm else None)
+                )
+            except Exception as e:
+                app.logger.exception(f"ml_add_lot (initial) failed: {e}")
+
+        _record_trace(
+            "buy",
+            px,
+            qty,
+            p_up,
+            STATE["ev"],
+            {
+                "tp_pct": float(tp_pct),
+                "sl_pct": float(sl_pct),
+                "ev_net": float(ev_net),
+                "buy_pct": float(buy_pct_eff),
+                "usd_amt": float(usd_amt),
+                "arm": (arm["id"] if arm else None),
+                "slippage": float(slippage),
+                "lot_id": (int(lot_id) if isinstance(lot_id, int) else lot_id),
+                "reason": (
+                    "auto_entry_learning" if LEARNING_MODE else "auto_entry_live"
+                ),
+            },
+        )
+
+        try:
+            examples_insert(
+                ts=now,
+                price=px,
+                reddit_avg=reddit_avg,
+                twitter_ema=tw_ema,
+                sig_tech=sig_tech,
+                atr_pct=atr_pct,
+                ema_slope=ema_slope,
+                hour_of_day=datetime.utcnow().hour,
+                vol_norm=atr_pct,
+                p_up=p_up,
+                tp_pct=tp_pct,
+                sl_pct=sl_pct,
+                decision="buy",
+                slippage=slippage,
+            )
+        except Exception:
+            pass
+
+        LAST_ORDER_TS = now
+        ORDERS_LAST_HOUR.append(now)
+
+        if bool(_PARAMS.get("MULTI_TRADE_MODE", True)):
+            try:
+                ml_tick(price, p_up)
+            except Exception:
+                pass
+
+        return {"enter": "buy", "arm": (arm["id"] if arm else None)}
+
+    # --- Re-entry (pyramiding ou lot supplémentaire) ---
+    if STATE.get("in_position") and bool(_PARAMS.get("ALLOW_MULTIPLE", True)):
+        if bool(_PARAMS.get("MULTI_TRADE_MODE", True)):
+            try:
+                open_lots = len(POSITIONS)
+            except Exception:
+                open_lots = int(STATE.get("entries_count") or 1)
+            maxe = int(_PARAMS.get("MAX_CONCURRENT_ENTRIES", 3))
+            entries_ok = open_lots < maxe
+        else:
+            maxe = int(_PARAMS.get("MAX_CONCURRENT_ENTRIES", 3))
+            entries_ok = int(STATE.get("entries_count") or 1) < maxe
+
+        if entries_ok:
+            min_bps = int(_PARAMS.get("MIN_REENTRY_DISTANCE_BPS", 15))
+            last_entry = float(STATE.get("last_entry_price") or ENTRY_PRICE or price)
+            need_reentry = price >= last_entry * (1.0 + (min_bps / 10000.0))
+            reentry_need_trend = bool(_PARAMS.get("REENTRY_REQUIRE_TREND", False))
+            if (
+                (p_up >= pbuy)
+                and (ev_net >= min_ev_net)
+                and (trend_ok or not reentry_need_trend)
+                and need_reentry
+            ):
+                re_pct = float(_PARAMS.get("REENTRY_BUY_PCT", 0.15))
+                usd_amt_re = max(
+                    float(os.getenv("RISK_MIN_ORDER_NOTIONAL", "10")), cash * re_pct
+                )
+                if usd_amt_re <= cash + 1e-9:
+                    prev_qty = float(STATE.get("position_qty") or 0.0)
+                    pre_px = price
+                    qty, px, fee = _paper_buy(usd_amt_re)
+                    if qty <= 0.0:
+                        _record_trace(
+                            "hold",
+                            price,
+                            0.0,
+                            p_up,
+                            STATE["ev"],
+                            {"reason": "reentry_qty_zero"},
+                        )
+                        if bool(_PARAMS.get("MULTI_TRADE_MODE", True)):
+                            try:
+                                ml_tick(price, p_up)
+                            except Exception:
+                                pass
+                        return {"skipped": "reentry_qty_zero"}
+
+                    slippage = (px - pre_px) / pre_px if pre_px > 0 else 0.0
+
+                    new_qty = float(STATE.get("position_qty") or 0.0)
+                    if prev_qty > 0:
+                        prev_qty = float(prev_qty or 0.0)
+                        qty = float(qty or 0.0)
+                        px = float(px or 0.0)
+                        new_qty = prev_qty + qty
+                        base_px = (
+                            ENTRY_PRICE
+                            if isinstance(ENTRY_PRICE, (int, float)) and ENTRY_PRICE > 0
+                            else px
+                        )
+                        if prev_qty <= 1e-12:
+                            ENTRY_PRICE = px
+                        else:
+                            ENTRY_PRICE = (prev_qty * base_px + qty * px) / max(
+                                1e-9, new_qty
+                            )
+                    else:
+                        ENTRY_PRICE = px
+                    STATE["entry_price"] = float(ENTRY_PRICE)
+                    PEAK_PRICE = max(PEAK_PRICE or px, price)
+
+                    STATE["entries_count"] = int(STATE.get("entries_count") or 1) + 1
+                    STATE["last_entry_price"] = px
+                    STATE["last_decision"] = "buy_add"
+
+                    if bool(_PARAMS.get("MULTI_TRADE_MODE", True)):
+                        try:
+                            ml_add_lot(
+                                qty, px, tp_pct, sl_pct, (arm["id"] if arm else None)
+                            )
+                        except Exception as e:
+                            app.logger.exception(f"ml_add_lot (reentry) failed: {e}")
+
+                    _record_trace(
+                        "buy_add",
+                        px,
+                        qty,
+                        p_up,
+                        STATE["ev"],
+                        {
+                            "tp_pct": tp_pct,
+                            "sl_pct": sl_pct,
+                            "ev_net": float(ev_net),
+                            "buy_pct": float(re_pct),
+                            "usd_amt": float(usd_amt_re),
+                            "arm": (arm["id"] if arm else None),
+                            "slippage": float(slippage),
+                            "reason": "pyramiding",
+                        },
+                    )
+                    try:
+                        examples_label_last("buy_add", float(ev_net))
+                    except Exception:
+                        pass
+                    LAST_ORDER_TS = now
+                    ORDERS_LAST_HOUR.append(now)
+
+                    if bool(_PARAMS.get("MULTI_TRADE_MODE", True)):
+                        try:
+                            ml_tick(price, p_up)
+                        except Exception:
+                            pass
+
+                    return {"enter": "buy_add", "arm": (arm["id"] if arm else None)}
+
+    # --- Sorties (TP/SL/BE/time/hystérésis) ---
+    if not bool(_PARAMS.get("MULTI_TRADE_MODE", True)):
+        time_stop_min = int(_PARAMS.get("TIME_STOP_MIN", 10))
+        trail_to_be = float(_PARAMS.get("TRAIL_TO_BREAKEVEN_PCT", 0.006))
+        min_hold_sec = int(_PARAMS.get("MIN_HOLD_SEC", 120))
+
+        if STATE.get("in_position") and ENTRY_PRICE:
+            if (PEAK_PRICE is None) or (price > PEAK_PRICE):
+                PEAK_PRICE = price
+            pnl_pct = (price - ENTRY_PRICE) / (ENTRY_PRICE or 1e-9)
+            age_sec = now - float(POSITION.get("opened_at") or now)
+            price_chg = (price - ENTRY_PRICE) / max(ENTRY_PRICE, 1e-9)
+
+            # --- Take-partial (sortie partielle) ------------------------------
+            try:
+                take_at = float(_PARAMS.get("TAKE_PARTIAL_AT_PCT", 0.0))
+                take_pct = float(_PARAMS.get("TAKE_PARTIAL_PCT", 0.0))
+                part_min_hold = int(_PARAMS.get("PARTIAL_MIN_HOLD_SEC", 0))
+                part_min_not = float(_PARAMS.get("PARTIAL_MIN_NOTIONAL", 0.0))
+                allow_multiple = bool(_PARAMS.get("PARTIAL_ALLOW_MULTIPLE", False))
+                partial_cooldown = int(_PARAMS.get("PARTIAL_COOLDOWN_SEC", 0))
+
+                qty_now = float(STATE.get("position_qty") or 0.0)
+                notional = qty_now * float(price or 0.0)
+
+                eligible = (
+                    take_at > 0.0
+                    and take_pct > 0.0
+                    and age_sec >= part_min_hold
+                    and pnl_pct >= take_at
+                    and notional >= part_min_not
+                )
+                if eligible:
+                    if not allow_multiple:
+                        eligible = not STATE.get("partial_done", False)
+                    else:
+                        last_ts = float(STATE.get("partial_last_ts") or 0.0)
+                        eligible = (time.time() - last_ts) >= max(0, partial_cooldown)
+
+                if eligible:
+                    q_part = max(0.0, min(qty_now * take_pct, qty_now))
+                    if q_part > 1e-12:
+                        ret = _paper_sell(q_part)
+                        qty_sold = float(ret[0] if len(ret) > 0 else 0.0)
+                        px_s = float(ret[1] if len(ret) > 1 else price)
+                        fee_s = float(ret[2] if len(ret) > 2 else 0.0)
+                        if qty_sold > 1e-12:
+                            STATE["partial_done"] = True
+                            STATE["partial_last_ts"] = time.time()
+                            real_pnl_pct = (px_s - (ENTRY_PRICE or px_s)) / max(
+                                (ENTRY_PRICE or px_s), 1e-12
+                            )
+                            pre_px = float(price or px_s)
+                            slippage = (px_s - pre_px) / pre_px if pre_px > 0 else 0.0
+                            _record_trace(
+                                "tp_partial",
+                                float(px_s),
+                                float(qty_sold),
+                                float(STATE.get("p_up", 0.5)),
+                                float(STATE.get("ev", 0.0)),
+                                {
+                                    "pct_sold": float(take_pct),
+                                    "trigger_at": float(take_at),
+                                    "pnl_pct_now": float(pnl_pct),
+                                    "real_pnl_pct": float(real_pnl_pct),
+                                    "fee": float(fee_s),
+                                    "slippage": float(slippage),
+                                },
+                            )
+            except Exception as _e:
+                try:
+                    app.logger.warning(f"take_partial error: {_e}")
+                except Exception:
+                    pass
+
+            # TP
+            if pnl_pct >= POSITION.get("target_pct", tp_pct):
+                qty, px, fee, pnl_value = _paper_sell_all()
+                real_pnl_pct = (
+                    (px - (ENTRY_PRICE or px)) / max(ENTRY_PRICE or px, 1e-9)
+                    if qty > 0
+                    else pnl_pct
+                )
+                STATE["in_position"] = False
+                STATE["last_decision"] = "tp"
+                _record_trace(
+                    "tp",
+                    px,
+                    qty,
+                    p_up,
+                    STATE["ev"],
+                    {"pnl_pct": real_pnl_pct, "reason": "tp_hit"},
+                )
+                try:
+                    examples_label_last("tp", real_pnl_pct)
+                except Exception:
+                    pass
+                ENTRY_PRICE = None
+                STATE["entry_price"] = None
+                PEAK_PRICE = None
+                LAST_ORDER_TS = now
+                ORDERS_LAST_HOUR.append(now)
+                try:
+                    if POSITION.get("arm_id"):
+                        bandit_update_reward(POSITION["arm_id"], float(pnl_value))
+                except Exception:
+                    pass
+                try:
+                    risk_on_trade_result(float(pnl_value))
+                except Exception:
+                    pass
+                POSITION = {
+                    "entry": None,
+                    "opened_at": None,
+                    "target_pct": None,
+                    "stop_pct": None,
+                    "arm_id": None,
+                }
+                return {"exit": "tp"}
+
+            # SL
+            if pnl_pct <= -float(POSITION.get("stop_pct", sl_pct)):
+                qty, px, fee, pnl_value = _paper_sell_all()
+                real_pnl_pct = (
+                    (px - (ENTRY_PRICE or px)) / max(ENTRY_PRICE or px, 1e-9)
+                    if qty > 0
+                    else pnl_pct
+                )
+                STATE["in_position"] = False
+                STATE["last_decision"] = "sl"
+                _record_trace(
+                    "sl",
+                    px,
+                    qty,
+                    p_up,
+                    STATE["ev"],
+                    {"pnl_pct": real_pnl_pct, "reason": "stop_loss"},
+                )
+                try:
+                    examples_label_last("sl", real_pnl_pct)
+                except Exception:
+                    pass
+                ENTRY_PRICE = None
+                STATE["entry_price"] = None
+                PEAK_PRICE = None
+                LAST_ORDER_TS = now
+                ORDERS_LAST_HOUR.append(now)
+                try:
+                    if POSITION.get("arm_id"):
+                        bandit_update_reward(POSITION["arm_id"], float(pnl_value))
+                except Exception:
+                    pass
+                try:
+                    risk_on_trade_result(float(pnl_value))
+                except Exception:
+                    pass
+                POSITION = {
+                    "entry": None,
+                    "opened_at": None,
+                    "target_pct": None,
+                    "stop_pct": None,
+                    "arm_id": None,
+                }
+                return {"exit": "sl"}
+
+            # BE (conservateur)
+            be_min_hold_sec = int(_PARAMS.get("BE_MIN_HOLD_SEC", 180))
+            be_trail_back = float(_PARAMS.get("BE_TRAIL_BACK_PCT", 0.002))
+            if (
+                pnl_pct >= trail_to_be
+                and age_sec >= be_min_hold_sec
+                and price < (PEAK_PRICE or price) * (1.0 - be_trail_back)
+                and pnl_pct >= must_cover
+            ):
+                if price <= ENTRY_PRICE:
+                    qty, px, fee, pnl_value = _paper_sell_all()
+                    real_pnl_pct = (
+                        (px - (ENTRY_PRICE or px)) / max(ENTRY_PRICE or px, 1e-9)
+                        if qty > 0
+                        else 0.0
+                    )
+                    STATE["in_position"] = False
+                    STATE["last_decision"] = "be_exit"
+                    _record_trace(
+                        "breakeven",
+                        px,
+                        qty,
+                        p_up,
+                        STATE["ev"],
+                        {"pnl_pct": real_pnl_pct, "reason": "breakeven_trail"},
+                    )
+                    try:
+                        examples_label_last("be", real_pnl_pct)
+                    except Exception:
+                        pass
+                    ENTRY_PRICE = None
+                    STATE["entry_price"] = None
+                    PEAK_PRICE = None
+                    LAST_ORDER_TS = now
+                    ORDERS_LAST_HOUR.append(now)
+                    try:
+                        if POSITION.get("arm_id"):
+                            bandit_update_reward(POSITION["arm_id"], float(pnl_value))
+                    except Exception:
+                        pass
+                    try:
+                        risk_on_trade_result(float(pnl_value))
+                    except Exception:
+                        pass
+                    POSITION = {
+                        "entry": None,
+                        "opened_at": None,
+                        "target_pct": None,
+                        "stop_pct": None,
+                        "arm_id": None,
+                    }
+                    return {"exit": "be"}
+
+            # Hystérésis
+            hys = float(_PARAMS.get("HYS_PCT", 0.015))
+            if p_up <= (psell - hys):
+                if age_sec < min_hold_sec:
+                    _record_trace(
+                        "hold",
+                        price,
+                        0.0,
+                        p_up,
+                        STATE["ev"],
+                        {
+                            "reason": "min_hold",
+                            "age_sec": age_sec,
+                            "min_hold": min_hold_sec,
+                        },
+                    )
+                    return {"skipped": "min_hold"}
+                if price_chg < must_cover:
+                    _record_trace(
+                        "hold",
+                        price,
+                        0.0,
+                        p_up,
+                        STATE["ev"],
+                        {
+                            "reason": "not_covering_costs",
+                            "delta": price_chg,
+                            "need": must_cover,
+                        },
+                    )
+                    return {"skipped": "not_covering_costs"}
+
+                qty, px, fee, pnl_value = _paper_sell_all()
+                real_pnl_pct = (
+                    (px - (ENTRY_PRICE or px)) / max(ENTRY_PRICE or px, 1e-9)
+                    if qty > 0
+                    else 0.0
+                )
+                STATE["in_position"] = False
+                STATE["last_decision"] = "sell"
+                _record_trace(
+                    "sell",
+                    px,
+                    qty,
+                    p_up,
+                    STATE["ev"],
+                    {
+                        "ev_net": float(ev_net),
+                        "pnl_pct": real_pnl_pct,
+                        "reason": "hysteresis_sell",
+                    },
+                )
+                try:
+                    examples_label_last("sell_signal", real_pnl_pct)
+                except Exception:
+                    pass
+                ENTRY_PRICE = None
+                STATE["entry_price"] = None
+                PEAK_PRICE = None
+                LAST_ORDER_TS = now
+                ORDERS_LAST_HOUR.append(now)
+                try:
+                    if POSITION.get("arm_id"):
+                        bandit_update_reward(POSITION["arm_id"], float(pnl_value))
+                except Exception:
+                    pass
+                try:
+                    risk_on_trade_result(float(pnl_value))
+                except Exception:
+                    pass
+                POSITION = {
+                    "entry": None,
+                    "opened_at": None,
+                    "target_pct": None,
+                    "stop_pct": None,
+                    "arm_id": None,
+                }
+                return {"exit": "signal"}
+
+            # Time exit
+            if (
+                POSITION.get("opened_at")
+                and (now - POSITION["opened_at"] > time_stop_min * 60)
+                and (pnl_pct > -0.001)
+            ):
+                qty, px, fee, pnl_value = _paper_sell_all()
+                real_pnl_pct = (
+                    (px - (ENTRY_PRICE or px)) / max(ENTRY_PRICE or px, 1e-9)
+                    if qty > 0
+                    else pnl_pct
+                )
+                STATE["in_position"] = False
+                STATE["last_decision"] = "time_exit"
+                _record_trace(
+                    "time_exit",
+                    px,
+                    qty,
+                    p_up,
+                    STATE["ev"],
+                    {"pnl_pct": real_pnl_pct, "reason": "timeout"},
+                )
+                try:
+                    examples_label_last("timeout", real_pnl_pct)
+                except Exception:
+                    pass
+                ENTRY_PRICE = None
+                STATE["entry_price"] = None
+                PEAK_PRICE = None
+                LAST_ORDER_TS = now
+                ORDERS_LAST_HOUR.append(now)
+                try:
+                    if POSITION.get("arm_id"):
+                        bandit_update_reward(POSITION["arm_id"], float(pnl_value))
+                except Exception:
+                    pass
+                try:
+                    risk_on_trade_result(float(pnl_value))
+                except Exception:
+                    pass
+                POSITION = {
+                    "entry": None,
+                    "opened_at": None,
+                    "target_pct": None,
+                    "stop_pct": None,
+                    "arm_id": None,
+                }
+                return {"exit": "time"}
+
+    # --- Tick multi-lots en fin de cycle (si activé) ---
+    if bool(_PARAMS.get("MULTI_TRADE_MODE", True)):
+        try:
+            ml_tick(price, p_up)
+        except Exception as e:
+            app.logger.exception(f"[ml_tick] {e}")
+
+    # --- HOLD par défaut ---
+    _record_trace("hold", price, 0.0, p_up, STATE["ev"], {"reason": "no_exit_no_entry"})
+    return {"hold": True}
+
+
+def api__test_buy():
+    try:
+        # prix synthétique s'il n'y en a pas
+        px = float(STATE.get("price") or 100.0)
+        if px <= 0:
+            px = 100.0
+            set_price(px, source="manual")
+        apply_fill("BUY", px, 0.01, fee=0.0)
+        return jsonify({"ok": True, "msg": "test BUY inserted", "price": px})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+def params_current():
+    return jsonify({"ok": True, "learning_mode": LEARNING_MODE, "params": _PARAMS})
+
+
+def api_tri_status():
+    return {
+        "p_up": float(STATE.get("p_up", 0.5)),
+        "p_flat": float(STATE.get("p_flat", 0.0)),
+        "p_down": float(STATE.get("p_down", 0.5)),
+        "ev_net": float(STATE.get("ev_net", 0.0)),
+        "tp_pct": float(_PARAMS.get("PROFIT_SELL_MIN_PCT", 0.002)),
+        "sl_pct": float(_PARAMS.get("LOSS_HARD_SL_PCT", 0.004)),
+        "size_usdt": float(STATE.get("last_size_usdt", 0.0)),
+        "in_position": bool(STATE.get("in_position", False)),
+    }
+
+
+def api_score_debug():
+    ts = float(STATE.get("score_ts") or 0.0)
+    return jsonify(
+        {
+            "use_sgd": bool(STATE.get("use_sgd")),
+            "p_rule": float(STATE.get("p_rule") or 0.0),
+            "p_sgd": float(STATE.get("p_sgd") or STATE.get("p_rule") or 0.0),
+            "blend": float(STATE.get("sgd_blend") or 0.0),
+            "final": float(STATE.get("p_up_final") or STATE.get("p_up") or 0.0),
+            "ts": ts,
+            "ts_iso": (
+                (datetime.utcfromtimestamp(ts).isoformat(timespec="seconds") + "Z")
+                if ts
+                else None
+            ),
+        }
+    )
+
+
+# --- REMOVED DUPLICATE BLOCK (lines 8820-8860) ---
+
+
+# --- REMOVED DUPLICATE BLOCK (lines 8863-8885) ---
+
+
+def api_autotrade_set():
+    body = request.get_json(silent=True) or {}
+    if "paused" not in body:
+        return jsonify({"ok": False, "error": "missing 'paused' boolean"}), 400
+    paused = bool(body["paused"])
+    ok = kv_set("AUTO_TRADE_PAUSED", paused)
+    if ok:
+        # on met aussi en mémoire pour réactivité immédiate
+        globals()["AUTO_TRADE_PAUSED"] = paused
+        return jsonify({"ok": True, "paused": paused})
+    return jsonify({"ok": False, "error": "kv_set failed"}), 500
+
+    def table_max_ts(table, ts_col="ts", ms_col="t"):
+        # essaie ts (secondes), puis t (millisecondes)
+        for col, div in ((ts_col, 1.0), (ms_col, 1000.0)):
+            if not col:
+                continue
+            try:
+                v = safe_one(f"SELECT MAX(CAST({col} AS REAL)) FROM {table}")
+                if v is not None:
+                    return float(v) / div
+            except Exception:
+                continue
+        return None
+
+    def age_from_ts(ts_val):
+        try:
+            return None if ts_val is None else float(now - float(ts_val))
+        except Exception:
+            return None
+
+    def safe_count(table):
+        try:
+            v = safe_one(f"SELECT COUNT(*) FROM {table}")
+            return int(v or 0)
+        except Exception:
+            return 0
+
+    px_ts = table_max_ts("prices", "ts", "t")
+    tw_ts = table_max_ts("twitter_sentiment", "ts", None)
+    rd_ts = table_max_ts("reddit_sentiment", "ts", None)
+    snap_ts = table_max_ts("snapshots", "ts", None)
+
+    ages = {
+        "price_age_s": age_from_ts(px_ts),
+        "twitter_age_s": age_from_ts(tw_ts),
+        "reddit_age_s": age_from_ts(rd_ts),
+        "snapshots_age_s": age_from_ts(snap_ts),
+        "examples_rows": safe_count("examples"),
+        "trades_rows": safe_count("trades"),
+    }
+
+    # Ping OHLC
+    ohlc_ok = False
+    try:
+        ohlc_ok = bool(fetch_ohlc(SYMBOL, "1m", 2))
+    except Exception:
+        ohlc_ok = False
+        ages["ohlc_recent"] = ohlc_ok
+
+        thr = {
+            "price_max_age_s": float(_PARAMS.get("MAX_TICK_AGE_S", 10)),
+            "sentiment_max_age_s": 180.0,
+            "snapshot_max_age_s": 120.0,
+        }
+
+        status = "ok"
+        notes = []
+
+        if ages["price_age_s"] is None or ages["price_age_s"] > thr["price_max_age_s"]:
+            status = "degraded"
+            notes.append(
+                {
+                    "id": "price_stale",
+                    "age_s": ages["price_age_s"],
+                    "limit": thr["price_max_age_s"],
+                }
+            )
+
+        if (
+            ages["twitter_age_s"] is None
+            or ages["twitter_age_s"] > thr["sentiment_max_age_s"]
+        ):
+            status = "degraded"
+            notes.append(
+                {
+                    "id": "twitter_stale",
+                    "age_s": ages["twitter_age_s"],
+                    "limit": thr["sentiment_max_age_s"],
+                }
+            )
+
+        if (
+            ages["reddit_age_s"] is None
+            or ages["reddit_age_s"] > thr["sentiment_max_age_s"]
+        ):
+            status = "degraded"
+            notes.append(
+                {
+                    "id": "reddit_stale",
+                    "age_s": ages["reddit_age_s"],
+                    "limit": thr["sentiment_max_age_s"],
+                }
+            )
+
+        if (
+            ages["snapshots_age_s"] is None
+            or ages["snapshots_age_s"] > thr["snapshot_max_age_s"]
+        ):
+            status = "degraded"
+            notes.append(
+                {
+                    "id": "snapshot_stale",
+                    "age_s": ages["snapshots_age_s"],
+                    "limit": thr["snapshot_max_age_s"],
+                }
+            )
+
+        if not ages["ohlc_recent"]:
+            status = "degraded"
+            notes.append({"id": "ohlc_fetch_failed"})
+
+        return jsonify(
+            {
+                "ok": True,
+                "status": status,
+                "ages": ages,
+                "thresholds": thr,
+                "notes": notes,
+            }
+        )
+    except Exception as e:
+        app.logger.exception(f"/api/health/deep failed: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# Racine "info"
+# --- REMOVED DUPLICATE BLOCK (lines 9025-9039) ---
+
+
+# Ta fonction existante, avec une route et 2-3 garde-fous
+@app.get("/api/routes")
+def api_routes():
+    """api_routes: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/routes
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/routes"
+    """
+    routes = []
+    for r in app.url_map.iter_rules():
+        if r.endpoint == "static":  # inutile d’exposer /static
+            continue
+        methods = sorted(m for m in r.methods if m not in ("HEAD", "OPTIONS"))
+        routes.append({"rule": str(r), "endpoint": r.endpoint, "methods": methods})
+    routes.sort(key=lambda x: x["rule"])
+    return (
+        jsonify(
+            {
+                "ok": True,
+                "env": os.getenv("APP_ENV", "testnet"),
+                "version": os.getenv("APP_VERSION", "0.0.0"),
+                "git_sha": os.getenv("GIT_SHA", "dev"),
+                "count": len(routes),
+                "routes": routes,
+            }
+        ),
+        200,
+    )
+
+
+# 404 en JSON (plus propre que la page HTML)
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({"ok": False, "error": "not_found", "path": request.path}), 404
+
+
+def api_params():
+    return jsonify({"ok": True, "params": _PARAMS})
+
+
+def api_examples_cleanup():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute(
+        """
+      DELETE FROM examples
+      WHERE ts IS NULL OR typeof(ts)='text' OR CAST(ts AS TEXT) GLOB '*[A-Za-z]*'
+         OR typeof(price)='text' OR CAST(price AS TEXT) GLOB '*[A-Za-z]*'
+         OR typeof(tp_pct)='text' OR CAST(tp_pct AS TEXT) GLOB '*[A-Za-z]*'
+         OR typeof(sl_pct)='text' OR CAST(sl_pct AS TEXT) GLOB '*[A-Za-z]*'
+    """
+    )
+    n = c.rowcount
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "deleted": int(n)})
+
+
+def api_calibrate():
+    j = request.get_json(silent=True) or {}
+    out = calibrate_platt(limit=int(j.get("limit", 3000)))
+    return jsonify(out)
+
+
+def api_learn_online():
+    j = request.get_json(silent=True) or {}
+    out = sgd_train_online(
+        limit=int(j.get("limit", 1000)),
+        lr=float(j.get("lr", 0.05)),
+        l2=float(j.get("l2", 1e-4)),
+    )
+    return jsonify({"ok": True, **out})
+
+
+def api_params_update():
+    global LEARNING_MODE
+    data = request.get_json(silent=True) or {}
+    for k, v in data.items():
+        _PARAMS[k] = v
+    if "LEARNING_MODE" in data:
+        LEARNING_MODE = bool(data["LEARNING_MODE"])
+    app.logger.info(f"params.update {data}")
+    return jsonify({"ok": True, "params": _PARAMS})
+
+
+def api_strategy_run():
+    res = decide_and_maybe_trade()
+    return jsonify(
+        {
+            "ok": True,
+            "status": "cycle_done",
+            "result": res,
+            "updated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        }
+    )
+
+
+def _fifo_roundtrip_pnls():
+    rows = _q(
+        """
+      SELECT side,
+             COALESCE(price,0.0) AS price,
+             COALESCE(qty,0.0)   AS qty,
+             COALESCE(fee,0.0)   AS fee
+      FROM trades ORDER BY ts ASC
+    """
+    )
+    lots = deque()
+    pnls = []
+    for side, price, qty, fee in rows:
+        s = (side or "").lower()
+        px = float(price or 0.0)
+        q = float(qty or 0.0)
+        f = float(fee or 0.0)
+        if s == "buy":
+            lots.append([q, px * q + f])
+        elif s == "sell":
+            remain = q
+            proceeds = px * q - f
+            alloc_cost = 0.0
+            while remain > 1e-12 and lots:
+                lqty, lcost = lots[0]
+                use = min(lqty, remain)
+                unit_cost = (lcost / lqty) if lqty > 0 else 0.0
+                alloc_cost += unit_cost * use
+                lqty -= use
+                remain -= use
+                if lqty <= 1e-12:
+                    lots.popleft()
+                else:
+                    lots[0][0] = lqty
+                    lots[0][1] = unit_cost * lqty
+            pnls.append(float(proceeds - alloc_cost))
+    return pnls
+
+
+def api_metrics_raw():
+    """
+    Séries compactes pour le front:
+      - pnl_per_trade (FIFO, [ts, pnl])
+      - equity (courbe papier reconstituée)
+      - hit_rate20 (rolling)
+      - drawdown
+    TOLÉRANT: CAST SQL + conversions sûres.
+    """
+
+    # 1) Trades castés
+    rows = _q(
+        """
+      SELECT
+        CAST(ts    AS REAL)                AS ts,
+        LOWER(COALESCE(side,''))           AS side,
+        CAST(COALESCE(price,0.0) AS REAL)  AS price,
+        CAST(COALESCE(qty,0.0)   AS REAL)  AS qty,
+        CAST(COALESCE(fee,0.0)   AS REAL)  AS fee
+      FROM trades
+      ORDER BY ts ASC
+    """
+    )
+
+    # 2) FIFO PnL par trade
+    lots = deque()
+    pnls_ts = []  # liste de [ts, pnl]
+    cash = 200
+    pos_qty = 0.0
+    pos_cost = 0.0  # coût alloué de la position courante
+
+    for ts, side, price, qty, fee in rows:
+        try:
+            tsf = float(ts or 0.0)
+            px = float(price or 0.0)
+            q = float(qty or 0.0)
+            f = float(fee or 0.0)
+        except Exception:
+            continue
+
+        if side == "buy":
+            cash -= px * q + f
+            lots.append([q, px * q + f])
+            pos_qty += q
+            pos_cost += px * q + f
+
+        elif side == "sell":
+            cash += px * q - f
+            remain = q
+            alloc = 0.0
+            while remain > 1e-12 and lots:
+                lqty, lcost = lots[0]
+                use = min(lqty, remain)
+                ucost = (lcost / lqty) if lqty > 0 else 0.0
+                alloc += ucost * use
+                lqty -= use
+                remain -= use
+                if lqty <= 1e-12:
+                    lots.popleft()
+                else:
+                    lots[0][0] = lqty
+                    lots[0][1] = ucost * lqty
+            pnl = (px * q - f) - alloc
+            pnls_ts.append([tsf, float(pnl)])
+            pos_qty = max(0.0, pos_qty - q)
+            pos_cost = max(0.0, pos_cost - alloc)
+
+    # 3) Équity reconstituée (grossière): cash + position valorisée
+    last_price = float(STATE.get("price") or 0.0) or 0.0
+    eq = []
+    cur_cash = 0.0
+    cur_pos_q = 0.0
+    for ts, side, price, qty, fee in _q(
+        """
+        SELECT CAST(ts AS REAL), LOWER(side),
+               CAST(price AS REAL), CAST(qty AS REAL), CAST(fee AS REAL)
+        FROM trades ORDER BY ts ASC
+    """
+    ):
+        try:
+            tsf = float(ts or 0.0)
+            px = float(price or 0.0)
+            q = float(qty or 0.0)
+            f = float(fee or 0.0)
+        except Exception:
+            continue
+        if side == "buy":
+            cur_cash -= px * q + f
+            cur_pos_q += q
+        elif side == "sell":
+            cur_cash += px * q - f
+            cur_pos_q -= q
+        val = cur_cash + cur_pos_q * (last_price or px)
+        eq.append([tsf, float(val)])
+
+    # 4) Rolling hit rate (20) sur pnls_ts
+    wins = [1 if p[1] > 0 else 0 for p in pnls_ts]
+    rh = []
+    k = 20
+    for i in range(len(wins)):
+        w = wins[max(0, i - k + 1) : i + 1]
+        hr = float(sum(w) / len(w)) if w else 0.0
+        rh.append([pnls_ts[i][0], hr])
+
+    # 5) Drawdown sur equity
+    dd = []
+    peak = -1e18
+    for t, v in eq:
+        peak = max(peak, v)
+        d = 0.0 if peak <= 0 else (v / peak - 1.0)
+        dd.append([t, float(d)])
+
+    pnl_series = [[ts_out[i], float(pnls[i])] for i in range(len(pnls))]
+    return jsonify(
+        {
+            "ok": True,
+            "pnl_per_trade": pnls_ts,
+            "equity": eq,
+            "hit_rate20": rh,
+            "drawdown": dd,
+        }
+    )
+
+
+def api_metrics_kpis():
+    # Récupère PnL FIFO par roundtrip si ta fonction le fait proprement
+    try:
+        pnls = [float(p) for p in _fifo_roundtrip_pnls() if p is not None]
+    except Exception:
+        pnls = []
+
+    n = len(pnls)
+    if n == 0:
+        avg_slip = (
+            _q(
+                "SELECT AVG(CAST(slippage AS REAL)) FROM trades WHERE slippage IS NOT NULL"
+            )[0][0]
+            or 0.0
+        )
+        return jsonify(
+            {
+                "ok": True,
+                "hit_rate_50": 0.0,
+                "hit_rate_200": 0.0,
+                "expectancy": 0.0,
+                "profit_factor": 0.0,
+                "avg_slippage": float(avg_slip or 0.0),
+                "win_streak_max": 0,
+                "loss_streak_max": 0,
+                "trades": 0,
+            }
+        )
+
+    wins = [1 if p > 0 else 0 for p in pnls]
+
+    def roll_hit(w, k):
+        if not w:
+            return 0.0
+        k = min(k, len(w))
+        return float(sum(w[-k:]) / float(k))
+
+    hr50 = roll_hit(wins, 50)
+    hr200 = roll_hit(wins, 200)
+
+    exp = float(sum(pnls) / float(n))
+    pos = float(sum(p for p in pnls if p > 0))
+    neg = float(-sum(p for p in pnls if p < 0))
+    pf = (pos / neg) if neg > 1e-12 else (pos if pos > 0 else 0.0)
+
+    avg_slip = (
+        _q("SELECT AVG(CAST(slippage AS REAL)) FROM trades WHERE slippage IS NOT NULL")[
+            0
+        ][0]
+        or 0.0
+    )
+    wmax, lmax = _streaks(wins)  # suppose déjà robuste; sinon encadre par try/except
+
+    return jsonify(
+        {
+            "ok": True,
+            "hit_rate_50": float(hr50),
+            "hit_rate_200": float(hr200),
+            "expectancy": float(exp),
+            "profit_factor": float(pf if pf != float("inf") else 1e9),
+            "avg_slippage": float(avg_slip or 0.0),
+            "win_streak_max": int(wmax),
+            "loss_streak_max": int(lmax),
+            "trades": int(n),
+        }
+    )
+
+
+def api_risk():
+    info = risk_update_and_check()
+    return jsonify({"ok": True, **info})
+
+
+def api_risk_reset():
+    k = date.today().isoformat()
+    _exec(
+        "UPDATE risk_daily SET realized_pnl=0.0, losses_streak=0, blocked_until=0.0, hit_today=0 WHERE yyyy_mm_dd=?",
+        (k,),
+    )
+    return jsonify({"ok": True, "reset": True})
+
+
+def api_bandit_seed():
+    data = request.get_json(silent=True) or {}
+    reset = bool(data.get("reset"))
+    ensure_bandit_schema()
+    bandit_seed_default(reset=reset)
+    return jsonify({"ok": True})
+
+
+def api_bandit_status():
+    rows = _bandit_fetch_all()
+    n_total = sum(int(r["pulls"] or 0) for r in rows) or 1
+    out = []
+    for r in rows:
+        pulls = max(1, int(r["pulls"] or 0))
+        mean = float(r.get("reward_sum") or 0.0) / pulls
+        ucb = mean + math.sqrt(2.0 * math.log(n_total) / pulls)
+        try:
+            cfg = json.loads(r.get("cfg_json") or "{}")
+        except Exception:
+            cfg = {}
+        out.append({**r, "mean": mean, "ucb": ucb, "cfg": cfg})
+    return jsonify({"ok": True, "arms": out, "n_total": n_total})
+
+
+def api_logs_get():
+    try:
+        tail = int(request.args.get("tail", 200))
+    except Exception:
+        tail = 200
+    lines = list(LOG_BUFFER)[-max(0, tail) :]
+    return jsonify(lines)
+
+
+def _rebuild_from_trades_sanitized(start_cash: float | None = None):
+    """
+    Reconstruit (cash, btc) en rejouant les trades de façon sûre.
+    - BUY : n'achète jamais plus que (cash - fee)/price
+    - SELL: ne vend jamais plus que la position disponible
+    Hypothèse: la fee est en devise de cotation (USDT). Voir variante fee_base ci-dessous.
+    """
+    try:
+        if start_cash is None:
+            start_cash = float(os.getenv("START_CASH", "200"))
+    except Exception:
+        start_cash = 200.0
+
+    cash = float(start_cash)
+    btc = 0.0
+
+    # Lis la table trades (dict-like)
+    try:
+        rows = _query(
+            "SELECT side, price, qty, fee, fee_ccy FROM trades ORDER BY ts ASC"
+        )
+    except NameError:
+        rows = _q("SELECT side, price, qty, fee, fee_ccy FROM trades ORDER BY ts ASC")
+
+    for t in rows:
+        side = str(t["side"]).upper()
+        if side not in ("BUY", "SELL"):
+            continue  # ignore les côtés inconnus
+
+        # sanitise
+        p = max(0.0, float(t.get("price") or 0.0))
+        q = max(0.0, float(t.get("qty") or 0.0))
+        f = max(0.0, float(t.get("fee") or 0.0))
+
+        if p <= 0.0 or q <= 0.0:
+            continue  # trade inutilisable
+
+        # --- cas standard: fee en QUOTE (USDT) ---
+        if side == "BUY":
+            afford_usd = max(0.0, cash - f)
+            exec_qty = min(q, afford_usd / max(1e-12, p))
+            cash -= p * exec_qty + f
+            btc += exec_qty
+        else:  # SELL
+            exec_qty = min(q, btc)
+            cash += p * exec_qty - f
+            btc -= exec_qty
+
+        # epsilon fix
+        if -1e-9 < cash < 0:
+            cash = 0.0
+        if -1e-12 < btc < 0:
+            btc = 0.0
+
+    return float(cash), float(btc)
+
+
+def _live_price():
+    # 1) prix en mémoire (mis à jour par tick/fill)
+    px = float(STATE.get("price") or 0.0)
+    if px > 0:
+        return px
+    # 2) dernier prix en BDD (si tu as une table prices)
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        r = c.execute("SELECT price FROM prices ORDER BY ts DESC LIMIT 1").fetchone()
+        if r and (r["price"] or 0) > 0:
+            return float(r["price"])
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    # 3) fallback: prix du dernier snapshot / trade
+    try:
+        px = float(_latest_price_fallback() or 0.0)  # si tu as déjà ce helper
+        if px > 0:
+            return px
+    except Exception:
+        pass
+    return 0.0
+
+
+def add_no_cache_headers(resp):
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
+
+
+def api_account():
+    paper = bool(STATE.get("paper", True))
+    price_live = float(
+        _live_price() or STATE.get("last_price") or STATE.get("price") or 0.0
+    )
+
+    # --- coût de sortie estimé (une jambe SELL) ---
+    prefer_maker = bool(_PARAMS.get("PREFER_MAKER", True))
+    maker_bps = float(_PARAMS.get("COST_MAKER_BPS", 2.0))
+    taker_bps = float(_PARAMS.get("COST_TAKER_BPS", 5.0))
+    other_bps = float(_PARAMS.get("OTHER_COST_BPS", 2.0))
+    fee_buffer_bps = float(_PARAMS.get("FEE_BUFFER_BPS", 5.0))
+    slippage = float(_PARAMS.get("SLIPPAGE", 0.0))
+    exit_leg_bps = maker_bps if prefer_maker else taker_bps
+    exit_cost_pct = (
+        exit_leg_bps + other_bps + fee_buffer_bps
+    ) / 10000.0 + slippage  # ex: 0.0009
+
+    if paper:
+        cash = float(STATE.get("cash") or 0.0)
+        btc = float(STATE.get("position_qty") or 0.0)
+        notional = (btc * price_live) if price_live > 0 else 0.0
+        valuation = cash + notional  # BRUTE
+        exit_cost_est = notional * exit_cost_pct if notional > 0 else 0.0
+        valuation_net = valuation - exit_cost_est  # NET (si on fermait tout maintenant)
+
+        return jsonify(
+            {
+                "ok": True,
+                "paper": True,
+                "price": price_live,
+                "cash": cash,
+                "btc": btc,
+                "valuation": valuation,  # BRUTE (compatibilité)
+                "valuation_gross": valuation,  # alias explicite
+                "valuation_net_est": valuation_net,  # NET estimée
+                "exit_cost_pct": exit_cost_pct,  # ex: 0.0009 => 9 bps
+                "exit_cost_est": exit_cost_est,  # en USDT
+                "prefer_maker": prefer_maker,
+            }
+        )
+
+    # Fallback (exchange réel / snapshot DB)
+    snap = get_account_snapshot_safe() or {}
+    cash = float(snap.get("cash") or 0.0)
+    btc = float(snap.get("btc") or snap.get("position_qty") or 0.0)
+    px = price_live if price_live > 0 else float(snap.get("price") or 0.0)
+    notional = btc * (px or 0.0)
+    valuation = cash + notional
+    exit_cost_est = notional * exit_cost_pct if notional > 0 else 0.0
+    valuation_net = valuation - exit_cost_est
+
+    return jsonify(
+        {
+            "ok": True,
+            "price": px,
+            "cash": cash,
+            "btc": btc,
+            "valuation": valuation,  # BRUTE (compat)
+            "valuation_gross": valuation,
+            "valuation_net_est": valuation_net,  # NET estimée
+            "exit_cost_pct": exit_cost_pct,
+            "exit_cost_est": exit_cost_est,
+            "prefer_maker": prefer_maker,
+        }
+    )
+
+
+def _trace(event: dict):
+    try:
+        DECISION_TRACE.append(
+            {"t": time.time(), **{k: v for k, v in (event or {}).items()}}
+        )
+    except Exception:
+        pass
+
+
+def _trace_snapshot(maxn=300):
+    """Récupère les dernières décisions depuis la mémoire (DECISION_TRACE)."""
+    try:
+        tr = list(DECISION_TRACE)  # déjà utilisé par /api/decision_trace
+        return tr[-maxn:]
+    except Exception:
+        return []
+
+
+def _fmt_pct(x: float) -> str:
+    try:
+        return f"{_f(x)*100:.2f}%"
+    except Exception:
+        return "—"
+
+
+def _fmt_money(x: float, sym: str = "USDT") -> str:
+    try:
+        s = f"{_f(x):,.2f}".replace(",", " ")
+        return f"{s} {sym}"
+    except Exception:
+        return f"{x} {sym}"
+
+
+def _fmt_qty(q: float) -> str:
+    v = _f(q)
+    return f"{v:.6f}" if v < 1 else f"{v:.3f}"
+
+
+def _last_exec_trade(side: str, max_age_s: int = 900):
+    side_u = (side or "").upper()
+    now_ts = time.time()
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT ts, side, price, qty, fee
+            FROM trades
+            WHERE side = ?
+            ORDER BY ts DESC
+            LIMIT 1
+        """,
+            (side_u,),
+        )
+        row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+    ts, s, price, qty, fee = row
+    ts, price, qty, fee = _f(ts), _f(price), _f(qty), _f(fee)
+    if (now_ts - ts) > max_age_s:
+        return None
+    return {
+        "ts": ts,
+        "side": side_u,
+        "price": price,
+        "qty": qty,
+        "fee": fee,
+        "notional_usd": qty * price,
+    }
+
+
+def _nearest_trace_for_trade(side: str, ts_trade: float, max_delta_s: int = 60):
+    side_l = (side or "").lower()
+    best, best_dt = None, 1e9
+    for d in reversed(DECISION_TRACE):
+        if not isinstance(d, dict):
+            continue
+        sd = str(d.get("side") or d.get("action") or "").lower()
+        if side_l.startswith("buy") and "buy" not in sd:
+            continue
+        if side_l.startswith("sell") and "sell" not in sd:
+            continue
+        ts = None
+        for k in ("ts", "t", "time"):
+            ts = _f(d.get(k), None)
+            if ts is not None:
+                break
+        if ts is None:
+            continue
+        dt = abs(_f(ts_trade) - ts)
+        if dt < best_dt:
+            best, best_dt = d, dt
+        if dt <= max_delta_s:
+            break
+    return best if best_dt <= max_delta_s else None
+
+
+def _build_buy_sell_explanation(trade: dict, trace: dict, thr: dict, side: str) -> str:
+    price = _f((trade or {}).get("price"))
+    qty = _f((trade or {}).get("qty"))
+    notional = _f((trade or {}).get("notional_usd"), qty * price)
+
+    # p_up / ev pris de la trace si dispo, sinon état courant
+    p_up = _f((trace or {}).get("p_up"), _f(STATE.get("p_up")))
+    ev = _f((trace or {}).get("ev"), _f(STATE.get("ev_net"), _f(STATE.get("ev"))))
+
+    # tp/sl (tolère une trace “sale”)
+    tp = _f(
+        (trace or {}).get("tp_pct"),
+        _f(POSITION.get("target_pct")) if isinstance(POSITION, dict) else 0.0,
+    )
+    sl = _f(
+        (trace or {}).get("sl_pct"),
+        _f(POSITION.get("stop_pct")) if isinstance(POSITION, dict) else 0.0,
+    )
+
+    # prix cibles (si connus)
+    tp_price = price * (1.0 + tp) if tp > 0 else None
+    sl_price = price * (1.0 - sl) if sl > 0 else None
+
+    reason = _reason_label(
+        str((trace or {}).get("exec") or (trace or {}).get("reason") or "")
+    )
+
+    is_buy = (side or "").upper() == "BUY"
+    action = "Acheté" if is_buy else "Vendu"
+    parts = [
+        f"{action} {_fmt_qty(qty)} @ {_fmt_money(price)} (taille ~ {_fmt_money(notional)})"
+    ]
+
+    if is_buy:
+        # BUY → comparer p_up à PBUY
+        pbuy = _f(thr["PBUY"])
+        parts.append(
+            f"car {_explain_strength(p_up, pbuy)} ({p_up:.3f} vs PBUY {pbuy:.2f})"
+        )
+    else:
+        # SELL → comparer p_up à PSELL (plus p_up est bas, plus la baisse est probable)
+        psell = _f(thr["PSELL"])
+        # “force” de baisse (on réutilise le libellé en inversant la logique)
+        d = psell - p_up
+        if d >= 0.05:
+            lbl = "signal de baisse fort"
+        elif d >= 0.02:
+            lbl = "signal de baisse modéré"
+        elif d >= 0:
+            lbl = "signal de baisse (sous le seuil)"
+        else:
+            lbl = "signal neutre/haussier"
+        parts.append(f"car {lbl} ({p_up:.3f} vs PSELL {psell:.2f})")
+
+    # EV
+    parts.append(
+        f"et {_explain_ev(ev, _f(thr['MIN_EV_NET']))} (EV {ev:.3f} vs MIN_EV {_f(thr['MIN_EV_NET']):.3f})"
+    )
+
+    # cadre de risque
+    if tp > 0 or sl > 0:
+        extra = []
+        extra.append(f"TP {_fmt_pct(tp)}")
+        if tp_price:
+            extra.append(f"≈ {_fmt_money(tp_price)}")
+        extra.append(f"SL {_fmt_pct(sl)}")
+        if sl_price:
+            extra.append(f"≈ {_fmt_money(sl_price)}")
+        parts.append("cadre de risque: " + " · ".join(extra))
+
+    # PnL net estimé sur ce fill (simple, basé sur entry_price si dispo)
+    if not is_buy:
+        ep = _f(STATE.get("entry_price"))
+        if ep > 0:
+            fee_rate_buy = _f(_PARAMS.get("FEE_RATE_BUY", 0.001))
+            fee_rate_sell = _f(
+                _PARAMS.get("FEE_RATE_SELL", _PARAMS.get("FEE_RATE_BUY", 0.001))
+            )
+            gross = (price - ep) * qty
+            fees = ep * qty * fee_rate_buy + price * qty * fee_rate_sell
+            pnl = gross - fees
+            pnl_pct = (price / ep - 1.0) if ep > 0 else 0.0
+            parts.append(f"pnl estimé: {_fmt_money(pnl)} ({_fmt_pct(pnl_pct)})")
+
+    if reason and reason != "—":
+        parts.append(f"raison: {reason}")
+
+    return " — ".join(parts)
+
+
+def _no_trade_reason(thr: dict) -> str:
+    p_up = _f(STATE.get("p_up"))
+    ev = _f(STATE.get("ev_net"), _f(STATE.get("ev")))
+    vol = _f(STATE.get("vol"))
+
+    # filtres principaux
+    if p_up < _f(thr["PBUY"]):
+        return f"p_up {p_up:.3f} < seuil d'achat {_f(thr['PBUY']):.2f}"
+    if ev < _f(thr["MIN_EV_NET"]):
+        return f"EV {ev:.3f} < MIN_EV {_f(thr['MIN_EV_NET']):.3f}"
+    if vol < _f(thr["VOL_MIN"]):
+        return f"volatilité {vol:.4f} < VOL_MIN {_f(thr['VOL_MIN']):.4f}"
+
+    # autres garde-fous fréquents
+    now = time.time()
+    min_gap = int(_PARAMS.get("MIN_SECONDS_BETWEEN_ORDERS", 15))
+    last_ts = _f(globals().get("LAST_ORDER_TS"))
+    if last_ts and (now - last_ts) < min_gap:
+        return f"cooldown: dernière exécution il y a {int(now-last_ts)}s < {min_gap}s"
+
+    max_per_h = int(_PARAMS.get("MAX_ORDERS_PER_HOUR", 60))
+    recent = [t for t in list(globals().get("ORDERS_LAST_HOUR", [])) if now - t < 3600]
+    if len(recent) >= max_per_h:
+        return f"quota: {len(recent)}/{max_per_h} ordres sur l'heure"
+
+    in_pos = bool(STATE.get("in_position"))
+    allow_multi = bool(
+        _PARAMS.get("ALLOW_MULTIPLE", True) or _PARAMS.get("MULTI_TRADE_MODE", True)
+    )
+    if in_pos and not allow_multi:
+        return "déjà en position et multi-entrées désactivé"
+
+    return "autre garde-fou (coûts/plancher TP, taille minimale, etc.)"
+
+
+def _build_no_trade_explanation(thr: dict) -> str:
+    p_up = _f(STATE.get("p_up"))
+    ev = _f(STATE.get("ev_net"), _f(STATE.get("ev")))
+    vol = _f(STATE.get("vol"))
+    reasons = []
+    if p_up < _f(thr["PBUY"]):
+        reasons.append(f"p_up {p_up:.3f} < seuil d'achat {_f(thr['PBUY']):.2f}")
+    if ev < _f(thr["MIN_EV_NET"]):
+        reasons.append(f"EV {ev:.3f} < MIN_EV {_f(thr['MIN_EV_NET']):.3f}")
+    if vol < _f(thr["VOL_MIN"]):
+        reasons.append(f"volatilité {vol:.4f} < VOL_MIN {_f(thr['VOL_MIN']):.4f}")
+    if not reasons:
+        return "Pas de trade : les filtres principaux passent, mais d'autres garde-fous bloquent (cooldown, position existante, coût plancher, etc.)."
+    return "Pas de trade : " + " ; ".join(reasons) + "."
+
+
+def _explain_strength(p_up: float, pbuy: float) -> str:
+    p_up = _f(p_up)
+    pbuy = _f(pbuy)
+    d = p_up - pbuy
+    if d >= 0.05:
+        return "signal de hausse fort"
+    if d >= 0.02:
+        return "signal de hausse modéré"
+    if d >= 0:
+        return "signal de hausse juste au-dessus du seuil"
+    if d >= -0.02:
+        return "signal faible (sous le seuil)"
+    return "signal défavorable"
+
+
+def _explain_ev(ev: float, min_ev: float) -> str:
+    ev = _f(ev)
+    min_ev = _f(min_ev)
+    if ev >= max(0.0, min_ev):
+        return "espérance positive"
+    if ev >= min_ev:
+        return "espérance acceptable pour test"
+    return "espérance négative"
+
+
+def _reason_label(tag: str) -> str:
+    m = (tag or "").lower()
+    if "pyram" in m:
+        return "renforcement (pyramiding)"
+    if "manual_buy" in m:
+        return "achat manuel"
+    if "manual" in m:
+        return "action manuelle"
+    if "learning" in m:
+        return "entrée d’apprentissage (simulation)"
+    if "engine" in m:
+        return "décision automatique"
+    return tag or "—"
+
+
+def _fmt_bps(x):
+    try:
+        return f"{float(x)*10000:.1f} bps"
+    except (ValueError, TypeError):
+        return "—"
+
+
+def _pbuy_effective_now():
+    if LEARNING_MODE:
+        return 0.0
+    pbuy = float(_PARAMS.get("PBUY", 0.60))
+    try:
+        hour = datetime.utcnow().hour
+        liquid_hours = set(range(12, 21))
+        if hour not in liquid_hours:
+            pbuy = min(0.99, pbuy + float(_PARAMS.get("PBUY_OFF_HOURS_ADD", 0.03)))
+    except Exception:
+        pass
+    return pbuy
+
+
+def _explain_buy(item):
+    """Construit un texte pour un BUY à partir de la trace."""
+    p_up = float(item.get("p_up", 0.5))
+    ev = float(item.get("ev", 0.0))
+    meta = item.get("meta", {}) or {}
+    ev_net = float(meta.get("ev_net", 0.0))
+    tp_pct = meta.get("tp_pct")
+    sl_pct = meta.get("sl_pct")
+    buy_pct = meta.get("buy_pct")
+    arm_id = meta.get("arm")
+    pbuy_eff = _pbuy_effective_now()
+    bullets = []
+    bullets.append(f"p_up { _fmt_pct(p_up) } ≥ PBUY { _fmt_pct(pbuy_eff) }")
+    bullets.append(f"EV_net { _fmt_bps(ev_net) } ≥ seuil (MIN_EV_NET + coûts)")
+    if tp_pct is not None and sl_pct is not None:
+        bullets.append(
+            f"Cibles coût-aware: TP { _fmt_pct(tp_pct) } / SL { _fmt_pct(sl_pct) }"
+        )
+    if buy_pct is not None:
+        bullets.append(f"Sizing (conviction): ~{float(buy_pct)*100:.0f}% de BUY_PCT")
+    if arm_id is not None:
+        bullets.append(f"Preset bandit: #{arm_id}")
+    return {
+        "title": "Achat exécuté",
+        "line": f"Acheté @ {item.get('price')} (qty {item.get('qty')}) car probabilité/EV/tendance OK.",
+        "bullets": bullets,
+    }
+
+
+def _explain_sell(item):
+    """Construit un texte pour un SELL/TP/SL/BE/time_exit."""
+    decision = item.get("decision")
+    p_up = float(item.get("p_up", 0.5))
+    ev = float(item.get("ev", 0.0))
+    meta = item.get("meta", {}) or {}
+    bullets = []
+    if decision == "tp":
+        bullets.append("Take Profit atteint (pnl_pct ≥ target_pct)")
+    elif decision == "sl":
+        bullets.append("Stop Loss touché (pnl_pct ≤ −stop_pct)")
+    elif decision == "breakeven":
+        bullets.append("Sortie break-even (trailing → retour sous pic et ≤ entry)")
+    elif decision == "time_exit":
+        bullets.append("Time-out (durée max atteinte sans perte > 0.1%)")
+    elif decision == "sell":
+        bullets.append("Signal SELL (hystérésis: p_up ≤ PSELL − 0.02)")
+    # Ajoute quelques chiffres si dispo
+    if "pnl_pct" in meta:
+        bullets.append(f"PnL: { _fmt_pct(meta.get('pnl_pct')) }")
+    return {
+        "title": "Vente exécutée",
+        "line": f"Vendu @ {item.get('price')} (qty {item.get('qty')}) — décision: {decision}",
+        "bullets": bullets,
+    }
+
+
+def _explain_hold_now():
+    """Explique pourquoi on NE trade PAS MAINTENANT. Retourne un dict {line:str, bullets:list[str]}."""
+    # Cas Learning : message clair + early return
+    out = {"line": "", "bullets": []}
+    if LEARNING_MODE:
+        out["line"] = "Mode apprentissage actif : les entrées/ventes sont facilitées."
+        out["bullets"].append("Seuils PBUY/PSELL et EV_net relâchés.")
+        out["bullets"].append("EV_net affiché comme N/A (learning).")
+        if not _learning_affects_balance():
+            out["bullets"].append(
+                "Les soldes ne diminuent pas (simulation sans impact cash)."
+            )
+        return out
+
+    # --- Mode normal : on calcule les raisons, puis on formate en {line, bullets} ---
+    reasons = []
+
+    # Cooldown / Rate limit
+    now = time.time()
+    cooldown = float(_PARAMS.get("MIN_SECONDS_BETWEEN_ORDERS", 20))
+    if LAST_ORDER_TS and (now - LAST_ORDER_TS < cooldown):
+        reasons.append(
+            {
+                "id": "cooldown",
+                "text": f"Cooldown {int(cooldown - (now - LAST_ORDER_TS))}s",
+            }
+        )
+    if len(ORDERS_LAST_HOUR) >= int(_PARAMS.get("MAX_ORDERS_PER_HOUR", 20)):
+        reasons.append({"id": "max_per_hour", "text": "Plafond d’ordres atteint"})
+
+    # Kill switch (informatif)
+    ks = kill_switch_checks()
+    if ks:
+        if isinstance(ks, (tuple, list)) and len(ks) >= 2 and isinstance(ks[1], dict):
+            reason, meta = ks[0], ks[1]
+        else:
+            reason, meta = str(ks), {}
+        label = (
+            "Kill-switch (info)"
+            if not bool(_PARAMS.get("KILL_SWITCH_ENABLED", True))
+            else "Kill-switch"
+        )
+        reasons.append({"id": "kill_switch", "text": f"{label}: {reason}", **meta})
+
+    # Indicateurs live
+    items = fetch_ohlc(SYMBOL, "1m", 240) or []
+    sig_tech, indic = _tech_signal(items)
+    price = get_latest_price() or 0.0
+    atr = indic.get("atr")
+    ema_f = indic.get("ema_fast")
+    ema_s = indic.get("ema_slow")
+    rsi = indic.get("rsi")
+    atr_pct = (atr / price) if (atr and price > 0) else 0.0
+
+    vol_min = float(_PARAMS.get("VOL_MIN", 0.0025))
+    if atr_pct < vol_min:
+        reasons.append(
+            {
+                "id": "low_vol",
+                "text": f"Vol trop faible: ATR/px {_fmt_pct(atr_pct)} < {_fmt_pct(vol_min)}",
+            }
+        )
+
+    # p_up / EV
+    p_up = float(STATE.get("p_up", 0.5))
+    ev_net = float(STATE.get("ev_net", 0.0))
+    min_ev = float(STATE.get("min_ev_effective", float(_PARAMS.get("MIN_EV_NET", 0.0))))
+    pbuy = _pbuy_effective_now()
+
+    # Tendance
+    tech_min = float(_PARAMS.get("TECH_TREND_MIN", 0.02))
+    vol_min_high = float(_PARAMS.get("VOL_MIN_HIGH", 0.0035))
+    ema_ok = ema_f is not None and ema_s is not None and ema_f >= ema_s
+    rsi_ok = (rsi is None) or (float(rsi) >= 45.0)
+    sig_ok = (sig_tech is not None) and (float(sig_tech) >= tech_min)
+    trend_ok = ema_ok or (sig_ok and (atr_pct >= vol_min_high) and rsi_ok)
+
+    if p_up < pbuy:
+        reasons.append(
+            {
+                "id": "p_up_below",
+                "text": f"p_up {_fmt_pct(p_up)} < PBUY {_fmt_pct(pbuy)}",
+            }
+        )
+    if ev_net < min_ev:
+        reasons.append(
+            {
+                "id": "ev_below",
+                "text": f"EV_net {_fmt_bps(ev_net)} < seuil {_fmt_bps(min_ev)}",
+            }
+        )
+    if not trend_ok:
+        reasons.append(
+            {
+                "id": "trend_not_ok",
+                "text": "Tendance insuffisante (EMAfast<EMAslow ou sig<min ou RSI bas)",
+            }
+        )
+
+    # Déjà en position
+    if STATE.get("in_position"):
+        if not bool(_PARAMS.get("ALLOW_MULTIPLE", True)):
+            reasons = [{"id": "in_position", "text": "Déjà en position"}] + reasons
+        else:
+            entries = int(STATE.get("entries_count") or 1)
+            maxe = int(_PARAMS.get("MAX_CONCURRENT_ENTRIES", 3))
+            if entries >= maxe:
+                reasons = [
+                    {
+                        "id": "in_position",
+                        "text": f"Déjà en position ({entries}/{maxe})",
+                    }
+                ] + reasons
+
+    # Formatage final
+    if not reasons:
+        return {
+            "line": "Rien n’empêche un trade maintenant d’après les règles courantes.",
+            "bullets": ["Les seuils p_up/EV/tendance sont satisfaits."],
+        }
+
+    return {
+        "line": "Pas de trade maintenant : conditions non réunies.",
+        "bullets": [r["text"] for r in reasons],
+    }
+
+
+def _place_order(side="BUY", price=None, qty=None, simulate_manual=False):
+    """
+    Place un ordre réel ou simulé selon LEARNING_MODE ou simulate_manual.
+    """
+    global LEARNING_MODE
+
+    price = price or get_latest_price() or 0.0
+    qty = qty or float(_PARAMS.get("BUY_PCT", 0.25))
+
+    if LEARNING_MODE or simulate_manual:
+        print(f"[DEBUG] Trade simulé {side} à {price} qty={qty}")
+        STATE["in_position"] = True
+        STATE["entries_count"] = int(STATE.get("entries_count") or 0) + 1
+
+        try:
+            apply_fill(side, price, qty)
+        except Exception as e:
+            print(f"[ERROR] apply_fill a échoué: {e}")
+            return False
+
+        print(
+            f"[TRADE] {side} exécuté avec succès (mode {'apprentissage' if LEARNING_MODE else 'manuel'})"
+        )
+        return True
+    else:
+        print(f"[LIVE] Ordre réel {side} à {price} qty={qty}")
+        # send_order(side, price, qty)
+        return False
+
+
+def check_and_trade(side="BUY", price=None, qty=None, simulate_manual=False):
+    """
+    Vérifie si un trade est possible et place un ordre si ok.
+    """
+    reasons = _explain_hold_now()
+    if LEARNING_MODE or simulate_manual or not reasons:
+        _place_order(side=side, price=price, qty=qty, simulate_manual=simulate_manual)
+    else:
+        print("Attente, raisons :", [r["text"] for r in reasons])
+
+
+def api_why_now():
+    try:
+        price = _f(STATE.get("last_price"), _f(STATE.get("price")))
+        p_up = _f(STATE.get("p_up"), _f(STATE.get("p_up_rule")))
+        ev = _f(STATE.get("ev_net"), _f(STATE.get("ev")))
+        last_decision = str(STATE.get("last_decision", "hold"))
+        vol = _f(STATE.get("vol"))
+
+        thr = {
+            "PBUY": _f(_PARAMS.get("PBUY", 0.55)),
+            "PSELL": _f(_PARAMS.get("PSELL", 0.45)),
+            "MIN_EV_NET": _f(_PARAMS.get("MIN_EV_NET", 0.0)),
+            "VOL_MIN": _f(_PARAMS.get("VOL_MIN", 0.0)),
+        }
+
+        ttl = int(_PARAMS.get("WHY_TRADE_TTL_SEC", 900))
+        last_buy = _last_exec_trade("BUY", ttl)
+        last_sell = _last_exec_trade("SELL", ttl)
+        buy_trace = (
+            _nearest_trace_for_trade("BUY", (last_buy or {}).get("ts", 0.0))
+            if last_buy
+            else None
+        )
+        sell_trace = (
+            _nearest_trace_for_trade("SELL", (last_sell or {}).get("ts", 0.0))
+            if last_sell
+            else None
+        )
+
+        buy_expl = (
+            _build_buy_sell_explanation(last_buy, buy_trace, thr, "BUY")
+            if last_buy
+            else None
+        )
+        sell_expl = (
+            _build_buy_sell_explanation(last_sell, sell_trace, thr, "SELL")
+            if last_sell
+            else None
+        )
+        no_trade_expl = _build_no_trade_explanation(thr)
+
+        reasons = [
+            {
+                "name": "p_up_vs_PBUY",
+                "value": p_up,
+                "threshold": thr["PBUY"],
+                "pass": bool(p_up >= thr["PBUY"]),
+            },
+            {
+                "name": "ev_vs_MIN_EV_NET",
+                "value": ev,
+                "threshold": thr["MIN_EV_NET"],
+                "pass": bool(ev >= thr["MIN_EV_NET"]),
+            },
+            {
+                "name": "vol_vs_VOL_MIN",
+                "value": vol,
+                "threshold": thr["VOL_MIN"],
+                "pass": bool(vol >= thr["VOL_MIN"]),
+            },
+        ]
+
+        return jsonify(
+            {
+                "ok": True,
+                "now": {
+                    "price": price,
+                    "p_up": p_up,
+                    "ev": ev,
+                    "last_decision": last_decision,
+                    "thresholds": thr,
+                    "reasons": reasons,
+                    "no_trade_explanation": no_trade_expl,
+                },
+                "last_buy_exec": last_buy,
+                "last_sell_exec": last_sell,
+                "buy_explanation": buy_expl,
+                "sell_explanation": sell_expl,
+            }
+        )
+    except Exception as e:
+        app.logger.exception("/api/why/now failed")
+        return jsonify({"ok": False, "error": str(e)}), 200
+
+
+def _latest_price_fallback(symbol: str | None = None) -> float:
+    """
+    Prix le plus récent, robuste :
+    1) état mémoire, 2) snapshots, 3) prices (ts ou t/1000),
+    4) decision_trace, 5) fetch_ohlc(1m). Retourne 0.0 si rien.
+    """
+    # 1) État en mémoire
+    try:
+        px = float((STATE or {}).get("price") or 0.0)
+        if px > 0.0:
+            return px
+    except Exception:
+        pass
+
+    # 2) Dernier prix dans snapshots
+    try:
+        r = _q(
+            """
+            SELECT CAST(price AS REAL)
+            FROM snapshots
+            WHERE price IS NOT NULL
+            ORDER BY CAST(ts AS REAL) DESC
+            LIMIT 1
+        """
+        )
+        if r and r[0] and r[0][0]:
+            px = float(r[0][0])
+            if px > 0.0:
+                return px
+    except Exception:
+        pass
+
+    # 3) Dernier prix dans prices (close ou price) avec ts (s) ou t (ms)
+    try:
+        r = _q(
+            """
+            SELECT COALESCE(CAST(close AS REAL), CAST(price AS REAL)) AS px
+            FROM prices
+            ORDER BY COALESCE(CAST(ts AS REAL), CAST(t AS REAL)/1000.0) DESC
+            LIMIT 1
+        """
+        )
+        if r and r[0] and r[0][0]:
+            px = float(r[0][0])
+            if px > 0.0:
+                return px
+    except Exception:
+        pass
+
+    # 4) Fallback sur decision_trace (si tu y loggues un price)
+    try:
+        r = _q(
+            """
+            SELECT CAST(price AS REAL)
+            FROM decision_trace
+            WHERE price IS NOT NULL
+            ORDER BY CAST(ts AS REAL) DESC
+            LIMIT 1
+        """
+        )
+        if r and r[0] and r[0][0]:
+            px = float(r[0][0])
+            if px > 0.0:
+                return px
+    except Exception:
+        pass
+
+    # 5) Dernière bougie via OHLC (1m)
+    if symbol is None:
+        symbol = globals().get("SYMBOL")
+    if symbol and "fetch_ohlc" in globals():
+        try:
+            items = fetch_ohlc(symbol, "1m", 1) or []
+            if items:
+                px = float(items[-1].get("close") or 0.0)
+                if px > 0.0:
+                    return px
+        except Exception:
+            pass
+
+    return 0.0
+
+
+def _compute_live_indicators():
+    # 240 bougies 1m pour ATR/EMA/RSI (mêmes helpers que decide_and_maybe_trade)
+    items = fetch_ohlc(SYMBOL, "1m", 240) or []
+    sig_tech, indic = _tech_signal(items)
+    price = get_latest_price() or _latest_price_fallback()
+    atr = indic.get("atr")
+    ema_fast = indic.get("ema_fast")
+    ema_slow = indic.get("ema_slow")
+    rsi_val = indic.get("rsi")
+    atr_pct = (atr / price) if (atr and price > 0) else 0.0
+    return {
+        "price": price,
+        "atr_pct": atr_pct,
+        "ema_fast": ema_fast,
+        "ema_slow": ema_slow,
+        "rsi": rsi_val,
+        "sig_tech": sig_tech,
+    }
+
+
+def api_why():
+    """Compat: renvoie le diagnostic live (même logique que /api/why/now)"""
+    try:
+        # On réutilise la logique unique
+        reasons = _explain_hold_now()
+
+        # On conserve aussi quelques champs utiles pour l’UI
+        p_up = float(STATE.get("p_up", 0.5))
+        ev_net = float(STATE.get("ev_net", 0.0))
+        in_pos = bool(STATE.get("in_position"))
+
+        # petit complément prix/ATR si dispo
+        ind = _compute_live_indicators()
+        atr_pct = float(ind.get("atr_pct") or 0.0)
+        price = float(ind.get("price") or 0.0)
+
+        return jsonify(
+            {
+                "ok": True,
+                "in_position": in_pos,
+                "p_up": p_up,
+                "ev_net": ev_net,
+                "atr_pct": atr_pct,
+                "price": price,
+                "reasons": reasons,
+            }
+        )
+    except Exception as e:
+        app.logger.exception(f"/api/why failed: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+def _fmt_pct2(x):
+    try:
+        return f"{float(x)*100:.2f}%"
+    except Exception:
+        return "—"
+
+
+def _mk_buy_summary(item):
+    m = item.get("meta", {}) if isinstance(item, dict) else {}
+    qty = item.get("qty", m.get("qty", 0))
+    price = item.get("price", m.get("price", 0))
+    p_up = item.get("p_up", m.get("p_up", 0))
+    ev = item.get("ev", m.get("ev", 0))
+
+    # EV_net: en learning -> masquer
+    ev_net = m.get("ev_net", None)
+    if LEARNING_MODE:
+        ev_net_str = "N/A (learning)"
+    else:
+        # Si tu stockes ev_net en 'ratio' (0.12) => fmt_rel_pct; si c'est déjà en %
+        # (ex: 3.0 pour 3%), garde fmt_abs_pct. Heuristique:
+        try:
+            evn = float(ev_net)
+            ev_net_str = fmt_rel_pct(evn) if evn <= 1.0 else fmt_abs_pct(evn)
+        except (ValueError, TypeError):
+            ev_net_str = "-"
+
+    tp = fmt_abs_pct(m.get("tp_pct", m.get("tp", 0)))  # 3.0 => "3.00%"
+    sl = fmt_abs_pct(m.get("sl_pct", m.get("sl", 0)))
+    usd_size = fmt_price(m.get("usd_size", m.get("size_usd", 0)))
+    arm = m.get("arm", m.get("preset", "?"))
+    reason = m.get("reason", m.get("why", "?"))
+
+    line = (
+        f"Acheté {fmt_qty(qty)} @ {fmt_price(price)} — "
+        f"p_up {fmt_prob(p_up)} — EV {fmt_prob(ev)} — EV_net {ev_net_str} — "
+        f"TP {tp} · SL {sl} — Taille ~ {usd_size} USD — "
+        f"Preset: {arm} — Raison: {reason}"
+    )
+    bullets = []
+
+    # ajoute 2–3 bullets utiles si dispo
+    if m.get("trend_reason"):
+        bullets.append(f"Trend: {m['trend_reason']}")
+    if m.get("cooldown"):
+        bullets.append(f"Cooldown restant: {int(m['cooldown'])}s")
+    if m.get("hys_active"):
+        bullets.append("Hystérésis actif (anti-aller/retour)")
+
+    return {"line": line, "bullets": bullets}
+
+
+def _mk_sell_summary(d: dict):
+    price = d.get("price")
+    qty = d.get("qty")
+    p_up = d.get("p_up")
+    ev = d.get("ev")
+    meta = d.get("meta") or {}
+    # libellé selon le type de sortie
+    tag = d.get("decision")
+    label = {
+        "tp": "Vente (TP)",
+        "sl": "Vente (SL)",
+        "breakeven": "Vente (BE)",
+        "time_exit": "Vente (timed)",
+        "sell": "Vente (signal)",
+    }.get(tag, "Vente")
+    line = f"{label} {qty:.6f} @ {price:.2f}" if (price and qty) else label
+    bullets = []
+    if p_up is not None:
+        bullets.append(f"p_up {float(p_up):.3f}")
+    if ev is not None:
+        bullets.append(f"EV {float(ev):.3f}")
+    if "ev_net" in meta:
+        bullets.append(f"EV_net {_fmt_pct2(meta['ev_net'])}")
+    if "pnl_pct" in meta:
+        bullets.append(f"PnL {_fmt_pct2(meta['pnl_pct'])}")
+    if "reason" in meta:
+        bullets.append(f"Raison: {meta['reason']}")
+    return {"line": line, "bullets": bullets}
+
+
+def api_why_last_actions():
+    """
+    Derniers trades exécutés (table 'trades'), chacun avec une explication en clair.
+    ?limit=10 pour limiter.
+    """
+    try:
+        limit = int(request.args.get("limit", 10))
+        conn = get_db()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT ts, side, price, qty, fee
+                FROM trades
+                ORDER BY ts DESC
+                LIMIT ?
+            """,
+                (limit,),
+            )
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+
+        thr = {
+            "PBUY": _f(_PARAMS.get("PBUY", 0.55)),
+            "PSELL": _f(_PARAMS.get("PSELL", 0.45)),
+            "MIN_EV_NET": _f(_PARAMS.get("MIN_EV_NET", 0.0)),
+            "VOL_MIN": _f(_PARAMS.get("VOL_MIN", 0.0)),
+        }
+
+        items = []
+        for row in rows or []:
+            ts, side, price, qty, fee = row
+            side = str(side or "").upper()
+            trade = {
+                "ts": _f(ts),
+                "side": side,
+                "price": _f(price),
+                "qty": _f(qty),
+                "fee": _f(fee),
+                "notional_usd": _f(price) * _f(qty),
+            }
+            trace = _nearest_trace_for_trade(side, trade["ts"])
+            text = _build_buy_sell_explanation(trade, trace, thr, side)
+            items.append(
+                {
+                    "ts": trade["ts"],
+                    "side": side,
+                    "price": trade["price"],
+                    "qty": trade["qty"],
+                    "notional_usd": trade["notional_usd"],
+                    "text": text,
+                }
+            )
+
+        return jsonify({"ok": True, "items": items})
+    except Exception as e:
+        app.logger.exception("/api/why/last_actions failed")
+        return jsonify({"ok": False, "items": [], "error": str(e)}), 200
+
+
+def api_learning_set():
+    global LEARNING_MODE
+    body = request.get_json(force=True, silent=True) or {}
+    if "enable" not in body:
+        abort(400, description="missing 'enable'")
+    LEARNING_MODE = bool(body["enable"])
+    return jsonify({"ok": True, "learning_mode": LEARNING_MODE})
+
+
+def api_learning_get():
+    return jsonify({"ok": True, "learning_mode": bool(LEARNING_MODE)})
+
+
+def home():
+    return render_template("index.html")
+
+
+def api_examples_label():
+    j = request.get_json(silent=True) or {}
+    k_min = int(j.get("k_min", 5))
+    n = label_examples_k(k_min)
+    return jsonify({"ok": True, "labeled": int(n), "k_min": k_min})
+
+
+@app.get("/api/admin/init_db")
+def api_admin_init_db():
+    """api_admin_init_db: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/admin/init_db
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/admin/init_db"
+    """
+    ensure_schema()
+    return jsonify({"ok": True, "msg": "DB schema ensured"})
+
+
+def ping():
+    return "pong v4"
+
+
+def _debug_reddit_cache():
+    res = _REDDIT_CACHE.get("res")
+    return jsonify(
+        {"ts": _REDDIT_CACHE.get("ts"), "has_res": res is not None, "res": res or {}}
+    )
+
+
+def _reset_reddit_cache():
+    _REDDIT_CACHE["ts"] = 0.0
+    _REDDIT_CACHE["res"] = None
+    return jsonify(ok=True)
+
+
+@app.get("/api/sentiment_twitter")
+def api_sentiment_twitter():
+    """api_sentiment_twitter: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/sentiment_twitter
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/sentiment_twitter"
+    """
+    try:
+        feats = get_sentiment_features()  # ton module existant
+        avg = float(feats.get("twitter_avg") or feats.get("twitter_ema") or 0.0)
+        median = float(feats.get("twitter_median") or 0.0)
+        count = int(feats.get("tw_count") or feats.get("twitter_count") or 0)
+        result = {
+            "avg": avg,
+            "median": median,
+            "count": count,
+            "top_positive": feats.get("tw_top_pos") or [],
+            "top_negative": feats.get("tw_top_neg") or [],
+            "rate_limited": bool(feats.get("twitter_rate_limited") or False),
+            "reset_epoch": feats.get("twitter_reset_epoch"),
+        }
+    except Exception as e:
+        # Fallback sûr si la collecte échoue
+        try:
+            app.logger.exception("twitter sentiment error: %s", e)
+        except Exception:
+            pass
+        result = {
+            "avg": 0.0,
+            "median": 0.0,
+            "count": 0,
+            "top_positive": [],
+            "top_negative": [],
+            "rate_limited": False,
+            "reset_epoch": None,
+        }
+
+    # Cache + State (comme avant)
+    _TW_CACHE["res"] = result
+    _TW_CACHE["ts"] = time.time()
+    STATE["twitter_avg"] = float(result["avg"])
+    STATE["twitter_ema"] = float(result["avg"])
+
+    # Écriture DB (source = 'tw')
+    try:
+        sym = _symbol_norm(request.args.get("symbol") or "BTCUSDT")
+        ts = int(time.time() * 1000)
+        _db_exec_many(
+            [("tw", sym, ts, float(result["avg"]))],
+            "INSERT INTO senti_points(source, symbol, ts, value) VALUES(?,?,?,?)",
+        )
+    except Exception as e:
+        try:
+            app.logger.exception("twitter insert failed: %s", e)
+        except Exception:
+            pass
+
+    return jsonify({"ok": True, **result})
+
+
+@app.get("/api/sentiment_reddit")
+def api_sentiment_reddit():
+    """api_sentiment_reddit: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/sentiment_reddit
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/sentiment_reddit"
+    """
+    force = request.args.get("force", "0").lower() in ("1", "true", "yes")
+    now = time.time()
+
+    if (
+        (not force)
+        and (now - _REDDIT_CACHE["ts"] < _REDDIT_TTL)
+        and _REDDIT_CACHE["res"] is not None
+    ):
+        clean = _clean_reddit_payload(_REDDIT_CACHE["res"])
+        _REDDIT_CACHE["res"] = clean
+        return jsonify(ok=True, cached=True, **clean)
+
+    # Calcul réel
+    res = compute_reddit_sentiment()
+    clean = _clean_reddit_payload(res)
+
+    # Cache
+    _REDDIT_CACHE["ts"] = now
+    _REDDIT_CACHE["res"] = clean
+
+    # Écriture DB (source = 'rd')
+    try:
+        sym = _symbol_norm(request.args.get("symbol") or "BTCUSDT")
+        ts = int(time.time() * 1000)
+        val = float(clean.get("avg") or 0.0)
+        _db_exec_many(
+            [("rd", sym, ts, val)],
+            "INSERT INTO senti_points(source, symbol, ts, value) VALUES(?,?,?,?)",
+        )
+    except Exception as e:
+        try:
+            app.logger.exception("reddit insert failed: %s", e)
+        except Exception:
+            pass
+
+    return jsonify(ok=True, cached=False, **clean)
+
+
+@app.get("/api/sentiment_combined")
+def api_sentiment_combined():
+    """api_sentiment_combined: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/sentiment_combined
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/sentiment_combined"
+    """
+    tw = _TW_CACHE.get("res") or {"avg": 0.0, "median": 0.0, "count": 0}
+    rd_resp = api_sentiment_reddit()
+    rd = rd_resp.get_json(silent=True) if hasattr(rd_resp, "get_json") else {}
+
+    def _num(x):
+        return x if isinstance(x, (int, float)) else None
+
+    avgs = [v for v in [_num(tw.get("avg")), _num(rd.get("avg"))] if v is not None]
+    meds = [
+        v for v in [_num(tw.get("median")), _num(rd.get("median"))] if v is not None
+    ]
+    avg_combined = sum(avgs) / len(avgs) if avgs else 0.0
+    median_combined = sum(meds) / len(meds) if meds else 0.0
+    count_combined = (tw.get("count") or 0) + (rd.get("count") or 0)
+    return jsonify(
+        ok=True,
+        cached=False,
+        avg=avg_combined,
+        median=median_combined,
+        count=count_combined,
+        reddit=rd,
+        twitter=tw,
+    )
+
+
+def api_status():
+    _maybe_refresh_price(False)
+    try:
+        # --- Prix & flèche ---
+        price = float(STATE.get("price") or 0.0)
+        chg = float(STATE.get("price_chg") or 0.0)
+        eps = max(price * 0.0001, 0.01)  # ~1 bp ou 0.01
+        price_dir = "↑" if chg > eps else ("↓" if chg < -eps else "→")
+
+        # --- Snapshot compte (cash/btc), robuste ---
+        snap = get_account_snapshot_safe() or {}
+        cash = float(snap.get("cash") or 0.0)
+        btc = float(snap.get("btc") or 0.0)
+
+        # --- Sentiment snapshots (ensure non-zero values for UI) ---
+        try:
+            reddit_avg_local = _reddit_sentiment_avg_cached()
+        except Exception:
+            reddit_avg_local = float(STATE.get("reddit_avg") or 0.0)
+        try:
+            # prefer smoothed twitter if available
+            twitter_avg_local = float(STATE.get("twitter_ema") or 0.0)
+            if twitter_avg_local == 0.0:
+                twitter_avg_local = _twitter_sentiment_avg_cached()
+        except Exception:
+            twitter_avg_local = float(STATE.get("twitter_avg") or 0.0)
+        # store back for status consumers
+        try:
+            STATE["reddit_avg"] = float(reddit_avg_local)
+            STATE["twitter_avg"] = float(twitter_avg_local)
+        except Exception:
+            pass
+
+        # --- Champs position exposés proprement ---
+        entry_price = STATE.get("entry_price")
+        try:
+            # fallback sur le global ENTRY_PRICE si dispo
+            if entry_price is None:
+                entry_price = (
+                    float(ENTRY_PRICE)
+                    if ("ENTRY_PRICE" in globals() and ENTRY_PRICE is not None)
+                    else None
+                )
+        except Exception:
+            pass
+
+        last_entry_price = STATE.get("last_entry_price")
+        entries_count = int(STATE.get("entries_count") or 0)
+        pos_qty = float(STATE.get("position_qty") or (btc if (btc and price) else 0.0))
+
+        # --- Auto-trade paused : tolérant à la signature de kv_get/kv_get_bool ---
+        autotrade_paused = bool(STATE.get("autotrade_paused") or False)
+        try:
+            # si kv_get_bool(key) existe
+            autotrade_paused = autotrade_paused or bool(
+                kv_get_bool("AUTO_TRADE_PAUSED")
+            )
+        except TypeError:
+            # ex: kv_get_bool(key, default) non supporté → fallback kv_get
+            try:
+                autotrade_paused = autotrade_paused or (
+                    str(kv_get("AUTO_TRADE_PAUSED") or "0") == "1"
+                )
+            except Exception:
+                pass
+        except NameError:
+            pass
+
+        # --- Preset (safe)
+        preset = "custom"
+        try:
+            preset = kv_get("AUTOTRADE_PRESET") or "custom"
+        except Exception:
+            pass
+
+        return jsonify(
+            {
+                "ok": True,
+                "paper": True,
+                "symbol": "BTCUSDT",
+                "price": price,
+                "direction": price_dir,
+                "price_chg": chg,
+                "price_prev": STATE.get("price_prev"),
+                # Sentiments + poids
+                "reddit_avg": float(reddit_avg_local or 0.0),
+                "twitter_avg": float(twitter_avg_local or 0.0),
+                "news_avg": float(STATE.get("news_avg") or 0.0),
+                # Moyenne mobile simple des 20 derniers prix (snapshots -> fallback en mémoire)
+                "avg_price_20": (
+                    lambda: (
+                        (lambda arr: (sum(arr) / max(1, len(arr))) if arr else 0.0)(
+                            [
+                                float(r.get("price") or 0.0)
+                                for r in _q(
+                                    "SELECT price FROM snapshots WHERE price IS NOT NULL ORDER BY ts DESC LIMIT 20"
+                                )
+                            ]
+                        )
+                        if _q(
+                            "SELECT COUNT(1) AS n FROM snapshots WHERE price IS NOT NULL"
+                        )[0].get("n", 0)
+                        else (
+                            sum(list(PRICE_RING)[-20:])
+                            / max(1, len(list(PRICE_RING)[-20:]))
+                            if PRICE_RING
+                            else 0.0
+                        )
+                    )
+                )(),
+                "weights": {
+                    "NEWS_WEIGHT": float(os.getenv("NEWS_WEIGHT", 0.25)),
+                    "REDDIT_WEIGHT": float(os.getenv("REDDIT_WEIGHT", 0.5)),
+                    "TWITTER_WEIGHT": float(os.getenv("TWITTER_WEIGHT", 0.15)),
+                    "LSTM_WEIGHT": float(os.getenv("LSTM_WEIGHT", 0.1)),
+                    "SENTI_WEIGHT": float(os.getenv("SENTI_WEIGHT", 1.0)),
+                    "TRENDS_WEIGHT": float(os.getenv("TRENDS_WEIGHT", 0.1)),
+                },
+                # État décisionnel
+                "in_position": bool(STATE.get("in_position") or (pos_qty > 0.0)),
+                "last_decision": STATE.get("last_decision"),
+                "p_up": float(STATE.get("p_up") or 0.5),
+                "ev": float(STATE.get("ev") or 0.0),
+                "min_ev_effective": float(STATE.get("min_ev_effective") or 0.0),
+                # Exposition position (NOUVEAU/fiabilisé)
+                "entry_price": (
+                    float(entry_price) if entry_price is not None else None
+                ),
+                "last_entry_price": (
+                    float(last_entry_price) if last_entry_price is not None else None
+                ),
+                "entries_count": entries_count,
+                "position_qty": pos_qty,
+                # Compte
+                "cash": cash,
+                "btc": btc,
+                "valuation": cash + btc * price,
+                # Divers
+                "autotrade_paused": autotrade_paused,
+                "learning_mode": bool(LEARNING_MODE),
+                "preset": preset,
+            }
+        )
+    except Exception as e:
+        app.logger.exception("status error")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+def price_refresh():
+    try:
+        px = float(get_latest_price() or 0.0)
+        try:
+            snapshot_now()
+        except Exception:
+            pass
+        return jsonify({"ok": True, "price": px})
+    except Exception as e:
+        app.logger.exception("price_refresh error")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+def api_decision_trace():
+    """
+    Trace de décisions SANS 'hold', avec appariement buy -> sell.
+    Colorisation:
+      - buy non clôturé = rouge
+      - buy + sell appariés = vert (les 2)
+    Champs ajoutés: status_color ('red'|'green'), color (alias), css_class (Tailwind),
+                    paired (bool), pair_id (int commun au couple).
+    """
+    try:
+        lim = int(request.args.get("limit", 200))
+    except Exception:
+        lim = 200
+
+    fetch_lim = max(lim * 3, 300)
+
+    # --- Lecture DB, compatible schémas (avec ou sans meta_json) ---
+    rows = []
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        try:
+            # schéma avec meta_json
+            cur.execute(
+                """
+                SELECT ts, decision, price, qty, p_up, ev, meta_json
+                FROM decision_trace
+                ORDER BY ts DESC
+                LIMIT ?
+            """,
+                (fetch_lim,),
+            )
+            rows = cur.fetchall()
+            has_meta = True
+        except Exception:
+            # schéma sans meta_json (ex: colonnes min_ev/exec)
+            cur.execute(
+                """
+                SELECT ts, decision, price, qty, p_up, ev
+                FROM decision_trace
+                ORDER BY ts DESC
+                LIMIT ?
+            """,
+                (fetch_lim,),
+            )
+            rows = cur.fetchall()
+            has_meta = False
+    except Exception as e:
+        try:
+            app.logger.exception(f"/api/decision_trace DB read failed: {e}")
+        except Exception:
+            pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    # --- Conversion -> dicts ---
+    items_raw = []
+    for r in rows:
+        if has_meta:
+            ts, decision, price, qty, p_up, ev, meta_json = r
+            try:
+                meta = json.loads(meta_json) if meta_json else {}
+            except Exception:
+                meta = {}
+        else:
+            ts, decision, price, qty, p_up, ev = r
+            meta = {}
+
+        items_raw.append(
+            {
+                "ts": float(ts or 0.0),
+                "ts_iso": datetime.utcfromtimestamp(float(ts or 0.0)).isoformat(
+                    timespec="seconds"
+                )
+                + "Z",
+                "decision": (decision or "").lower(),
+                "price": float(price or 0.0),
+                "qty": float(qty or 0.0),
+                "p_up": float(p_up or 0.0),
+                "ev": float(ev or 0.0),
+                "meta": meta,
+            }
+        )
+
+    # --- Filtrage: on garde seulement BUY/BUY_ADD et les sorties ---
+    BUY_DECISIONS = {"buy", "buy_add"}
+    SELL_DECISIONS = {"sell", "tp", "sl", "breakeven", "time_exit", "hys"}
+    filtered = [
+        d for d in items_raw if d["decision"] in (BUY_DECISIONS | SELL_DECISIONS)
+    ]
+
+    # --- Appariement buy -> sell ---
+    filtered.sort(key=lambda d: d["ts"])  # ordre croissant pour raisonner
+
+    open_buys = []  # liste des buys “ouverts”
+    next_pid = 1
+
+    for d in filtered:
+        d["paired"] = False
+        d["pair_id"] = None
+        d["status_color"] = None
+        d["color"] = None
+        d["css_class"] = None
+
+        if d["decision"] in BUY_DECISIONS:
+            # BUY non clôturé => rouge par défaut
+            d["status_color"] = "red"
+            d["color"] = "red"
+            d["css_class"] = "text-red-600"
+            open_buys.append(d)
+        else:
+            # SELL-like => s’il y a un BUY ouvert, on appaire
+            if open_buys:
+                b = open_buys.pop(0)  # FIFO; mettre pop() pour LIFO si tu préfères
+                pid = next_pid
+                next_pid += 1
+                # flag + couleurs
+                b["paired"] = True
+                b["pair_id"] = pid
+                d["paired"] = True
+                d["pair_id"] = pid
+                b["status_color"] = b["color"] = "green"
+                b["css_class"] = "text-green-600"
+                d["status_color"] = d["color"] = "green"
+                d["css_class"] = "text-green-600"
+            else:
+                # sell orphelin: on l’affiche en vert (info sortie isolée)
+                d["status_color"] = d["color"] = "green"
+                d["css_class"] = "text-green-600"
+
+    # --- Retour en ordre décroissant (récent d’abord) + limite ---
+    filtered.sort(key=lambda d: d["ts"], reverse=True)
+    items = filtered[:lim]
+
+    return jsonify(
+        {
+            "items": items,
+            "info": {
+                "excluded": "holds",
+                "colors": {"buy_open": "red", "pair_buy_sell": "green"},
+                "hints": "Utilisez 'status_color' ou 'color' ou 'css_class' pour la couleur ; 'paired' & 'pair_id' pour lier buy/sell.",
+            },
+        }
+    )
+
+
+def get_account_snapshot_state():
+    price = float(STATE.get("price") or 0.0)
+    cash = float(STATE.get("cash") or 200.0)
+    pos_q = float(STATE.get("position_qty") or 0.0)
+    return {
+        "cash": cash,
+        "btc": pos_q,
+        "price": price,
+        "valuation": cash + pos_q * price,
+    }
+
+
+def _hard_reset_position_state():
+    global ENTRY_PRICE, PEAK_PRICE, POSITION
+    ENTRY_PRICE = None
+    PEAK_PRICE = None
+    POSITION = {
+        "entry": None,
+        "opened_at": None,
+        "target_pct": None,
+        "stop_pct": None,
+        "arm_id": None,
+    }
+    STATE["in_position"] = False
+    STATE["entry_price"] = None
+    STATE["last_entry_price"] = None
+    STATE["entries_count"] = 0
+    STATE["last_decision"] = None
+
+
+def api_manual_buy():
+    j = request.get_json(force=True) or {}
+    # on accepte soit un montant (usdt), soit une quantité (qty)
+    usdt = float(
+        j.get("usdt") or j.get("usd") or j.get("notional") or j.get("quote") or 0.0
+    )
+    qty_in = float(j.get("qty") or 0.0)
+
+    # prix courant
+    px = float(STATE.get("last_price") or STATE.get("price") or _live_price() or 0.0)
+    if px <= 0:
+        return jsonify({"ok": False, "error": "no_price"}), 400
+
+    # paramètres de taille/frais
+    step = (
+        float(_PARAMS.get("PAPER_QTY_STEP", _PARAMS.get("QTY_STEP", 0.000001)))
+        or 0.000001
+    )
+    min_notional = float(_PARAMS.get("RISK_MIN_ORDER_NOTIONAL", 10.0))
+    fee_rate_buy = float(_PARAMS.get("FEE_RATE_BUY", 0.001))
+
+    # qty calculée (quantized) + fee estimée
+    qty = 0.0
+    fee = 0.0
+
+    if usdt > 0:
+        qty = usdt / px
+        qty = math.floor(qty / step) * step
+        fee = qty * px * fee_rate_buy
+        # on utilise ici _paper_buy si dans ton projet il applique vraiment le fill
+        # sinon, commente la ligne suivante et laisse apply_fill() (plus bas)
+        qty, px, fee = _paper_buy(
+            usdt
+        )  # <- dans ta base, _paper_buy applique déjà l'état
+    elif qty_in > 0:
+        qty = math.floor(qty_in / step) * step
+        fee = qty * px * fee_rate_buy
+        # si tu préfères bypasser _paper_buy pour le chemin "qty", tu peux appeler apply_fill ici :
+        apply_fill("BUY", px, qty, fee)
+    else:
+        return jsonify({"ok": False, "error": "need_usdt_or_qty"}), 400
+
+    if qty <= 0:
+        return jsonify({"ok": False, "error": "qty_zero"}), 400
+
+    notional = qty * px
+    if notional + 1e-9 < min_notional:
+        return (
+            jsonify(
+                {"ok": False, "error": "min_notional", "need_at_least": min_notional}
+            ),
+            400,
+        )
+
+    # --- État/targets & trace ---
+    now_ts = time.time()
+    atr = float(STATE.get("atr") or 0.0)
+    tp_pct = max(
+        float(_PARAMS.get("MIN_TP_PCT", 0.006)),
+        (atr / max(px, 1e-9)) * float(_PARAMS.get("TP_ATR_MULT", 0.8)),
+    )
+    sl_pct = max(
+        float(_PARAMS.get("MIN_SL_PCT", 0.005)),
+        (atr / max(px, 1e-9)) * float(_PARAMS.get("SL_ATR_MULT", 0.6)),
+    )
+
+    global ENTRY_PRICE, PEAK_PRICE, POSITION, LAST_ORDER_TS
+
+    # ATTENTION : si _paper_buy a déjà appliqué le fill et mis à jour la qty,
+    # il faut reconstituer la qty AVANT trade pour savoir si c'était une 1ère entrée
+    qty_after = float(STATE.get("position_qty") or 0.0)
+    prev_qty = max(0.0, qty_after - qty)
+
+    p_up = float(STATE.get("p_up", 0.5))
+    ev = float(STATE.get("ev", 0.0))
+
+    if prev_qty <= 1e-12:
+        # Première entrée
+        STATE["in_position"] = True
+        ENTRY_PRICE = px
+        STATE["entry_price"] = float(px)
+        PEAK_PRICE = px
+        POSITION = {
+            "entry": px,
+            "opened_at": now_ts,
+            "target_pct": tp_pct,
+            "stop_pct": sl_pct,
+            "arm_id": None,
+        }
+        STATE["entries_count"] = 1
+        STATE["last_entry_price"] = px
+        STATE["last_decision"] = "buy"
+
+        _record_trace(
+            "buy",
+            px,
+            qty,
+            p_up,
+            ev,
+            {"tp_pct": tp_pct, "sl_pct": sl_pct, "reason": "manual_buy"},
+        )
+    else:
+        # Pyramiding : MAJ prix de revient
+        new_qty = prev_qty + qty
+        base_px = (
+            ENTRY_PRICE if isinstance(ENTRY_PRICE, (int, float)) and ENTRY_PRICE else px
+        )
+        ENTRY_PRICE = (prev_qty * base_px + qty * px) / max(1e-9, new_qty)
+        STATE["entry_price"] = float(ENTRY_PRICE)
+        STATE["entries_count"] = int(STATE.get("entries_count", 1)) + 1
+        STATE["last_entry_price"] = px
+        STATE["last_decision"] = "buy_add"
+        PEAK_PRICE = max(PEAK_PRICE or px, px)
+
+        _record_trace(
+            "buy_add",
+            px,
+            qty,
+            p_up,
+            ev,
+            {
+                "tp_pct": POSITION.get("target_pct", tp_pct),
+                "sl_pct": POSITION.get("stop_pct", sl_pct),
+                "reason": "manual_pyramiding",
+            },
+        )
+
+    LAST_ORDER_TS = now_ts
+    ORDERS_LAST_HOUR.append(now_ts)
+
+    return jsonify({"ok": True, "side": "BUY", "price": px, "qty": qty, "fee": fee})
+
+
+def http_manual_sell():
+    """
+    Body: {"qty": <btc>}  (si qty<=0 ou absent -> SELL ALL)
+    """
+    data = request.get_json(silent=True) or {}
+    qty_req = float(data.get("qty") or 0.0)
+
+    if qty_req <= 0:
+        qty, px, fee, pnl_value = (
+            _paper_sell_all()
+        )  # <- débite BTC, crédite cash, trade + snapshot
+        return jsonify(
+            {
+                "ok": True,
+                "side": "SELL",
+                "price": px,
+                "qty": qty,
+                "fee": fee,
+                "pnl": pnl_value,
+            }
+        )
+
+    # SELL partiel (mêmes règles : clamp + trade + snapshot)
+    px = float(get_latest_price() or _latest_price_fallback() or 0.0)
+    fee = float(qty_req * px * FEE_RATE_SELL)
+    try:
+        snap = get_account_snapshot_safe() or {}
+        base_qty = float(snap.get("btc") or 0.0)
+        qty = min(qty_req, base_qty)
+        if qty <= 0:
+            return jsonify({"ok": False, "error": "nothing to sell"}), 400
+
+        insert_trade(now_ts(), "SELL", px, qty, fee)
+        new_cash = float(snap.get("cash") or 0.0) + qty * px - fee
+        new_btc = base_qty - qty
+        account_snapshot_write(cash=new_cash, btc=new_btc, price=px)
+        return jsonify(
+            {"ok": True, "side": "SELL", "price": px, "qty": qty, "fee": fee}
+        )
+    except Exception as e:
+        app.logger.exception("manual sell failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+def api_lstm_predictions():
+    try:
+        symbol = "BTC/USDT"
+        interval = "1m"
+        limit = 240
+        series = []
+        if ccxt is not None:
+            try:
+                ex = ccxt.binance(
+                    {
+                        "enableRateLimit": True,
+                        "options": {"adjustForTimeDifference": True},
+                    }
+                )
+                ex.timeout = 10_000
+                rows = ex.fetch_ohlcv(symbol, timeframe=interval, limit=limit)
+                series = [(r[0], r[4]) for r in rows]
+            except Exception:
+                series = []
+        if not series:
+            now_ms = int(time.time() * 1000)
+            base = float(STATE.get("price", 30000.0))
+            items = _synthetic_ohlc(limit, base, _interval_ms(interval), now_ms)
+            series = [(it["t"], it["c"]) for it in items]
+        win = 30
+        alpha = 2.0 / (win + 1.0)
+        ema = None
+        preds = []
+        for t, c in series:
+            ema = c if ema is None else (alpha * c + (1 - alpha) * ema)
+            preds.append((int(t), float(ema)))
+        tail = preds[-180:]
+        ts = [t for t, _ in tail]
+        y = [v for _, v in tail]
+        return jsonify({"ts": ts, "y": y}), 200
+    except Exception:
+        now = int(time.time())
+        ts = [now + i * 60 for i in range(20)]
+        y = [round(random.uniform(-1, 1), 4) for _ in ts]
+        return jsonify({"ts": ts, "y": y}), 200
+
+
+def api_trends():
+    return jsonify(
+        {
+            "avg_btc_price_20": None,
+            "avg_sentiment_20": STATE.get("sentiment", 0.0),
+            "last_update": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "prediction": 0.0,
+            "last_action": STATE.get("last_decision", "hold"),
+        }
+    )
+
+
+def api_ohlc_alias():
+    resp = api_price_ohlc()
+    if isinstance(resp, tuple):
+        resp, status = resp
+    else:
+        status = resp.status_code
+    data = resp.get_json(silent=True) or {}
+    if status != 200 or not data.get("ok"):
+        return jsonify([]), 200
+    items = data.get("items", [])
+    out = [
+        {
+            "t": it.get("t"),
+            "open": it.get("o"),
+            "high": it.get("h"),
+            "low": it.get("l"),
+            "close": it.get("c"),
+        }
+        for it in items
+    ]
+    return jsonify(out), 200
+
+
+def api_sentiment():
+    sent = float(STATE.get("sentiment", 0.0))
+    price = float(STATE.get("price", 0.0))
+    last_action = str(STATE.get("last_decision", "hold")).upper()
+    return jsonify(
+        {
+            "avg_sentiment_20": round(sent, 4),
+            "last_update": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "prediction": round(price * 0.01, 2),
+            "last_action": last_action,
+        }
+    )
+
+
+def _pick_feat(feats, primary, fallback=None, default=0.0):
+    # Garde les 0.0 (ne les remplace pas), accepte None → fallback → default
+    if primary in feats and feats[primary] is not None:
+        return float(feats[primary])
+    if fallback and fallback in feats and feats[fallback] is not None:
+        return float(feats[fallback])
+    return float(default)
+
+
+def api_google_trends():
+    now = int(time.time() * 1000)
+    data = [
+        {
+            "t": now - i * 3600000,
+            "score": max(0, min(100, 50 + random.randint(-20, 20))),
+        }
+        for i in range(24)
+    ]
+    return jsonify({"data": data})
+
+
+def api_tweets():
+    ex = [
+        {
+            "text": "BTC range-bound.",
+            "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        },
+        {
+            "text": "Whales spotted.",
+            "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        },
+    ]
+    return jsonify(ex)
+
+
+def api_tweets_sentiment():
+    ex = [
+        {"score": round(random.uniform(-1, 1), 3), "text": "News A"},
+        {"score": round(random.uniform(-1, 1), 3), "text": "News B"},
+    ]
+    _TW_CACHE["res"] = {
+        "avg": sum([x["score"] for x in ex]) / len(ex),
+        "median": statistics.median([x["score"] for x in ex]),
+        "count": len(ex),
+    }
+    _TW_CACHE["ts"] = time.time()
+    return jsonify(ex)
+
+
+def get_hilo_last_between(ts0: float, t1: float):
+    """
+    Retourne (hi, lo, last) des prix observés dans [ts0, t1].
+    Priorité: snapshots -> prices (OHLC, ts ou t/1000) -> decision_trace.
+    """
+    ts0 = float(ts0)
+    t1 = float(t1)
+
+    # 1) snapshots (le plus fin, en temps réel)
+    rows = _q(
+        """
+        SELECT CAST(ts AS REAL) AS ts, CAST(price AS REAL) AS price
+        FROM snapshots
+        WHERE CAST(ts AS REAL) >= ? AND CAST(ts AS REAL) <= ? AND price IS NOT NULL
+        ORDER BY CAST(ts AS REAL) ASC
+    """,
+        (ts0, t1),
+    )
+    if rows:
+        prices = [float(p) for _, p in rows if p is not None]
+        if prices:
+            return (max(prices), min(prices), prices[-1])
+
+    # 2) prices (OHLC). Accepte soit 'ts' en secondes, soit 't' en millisecondes.
+    rows = _q(
+        """
+        SELECT
+            COALESCE(CAST(ts AS REAL), CAST(t AS REAL)/1000.0) AS tsec,
+            CAST(high  AS REAL) AS hi,
+            CAST(low   AS REAL) AS lo,
+            CAST(close AS REAL) AS cl
+        FROM prices
+        WHERE COALESCE(CAST(ts AS REAL), CAST(t AS REAL)/1000.0) >= ?
+          AND COALESCE(CAST(ts AS REAL), CAST(t AS REAL)/1000.0) <= ?
+        ORDER BY tsec ASC
+    """,
+        (ts0, t1),
+    )
+    if rows:
+        highs = [float(r[1]) for r in rows if r[1] is not None]
+        lows = [float(r[2]) for r in rows if r[2] is not None]
+        closes = [float(r[3]) for r in rows if r[3] is not None]
+        if closes:  # si hi/lo manquent, on retombe sur close
+            hi = max(highs or closes)
+            lo = min(lows or closes)
+            last = closes[-1]
+            return (hi, lo, last)
+
+    # 3) fallback: decision_trace (si tu loggues un price ici)
+    rows = _q(
+        """
+        SELECT CAST(ts AS REAL) AS ts, CAST(price AS REAL) AS price
+        FROM decision_trace
+        WHERE CAST(ts AS REAL) >= ? AND CAST(ts AS REAL) <= ? AND price IS NOT NULL
+        ORDER BY CAST(ts AS REAL) ASC
+    """,
+        (ts0, t1),
+    )
+    if rows:
+        prices = [float(p) for _, p in rows if p is not None]
+        if prices:
+            return (max(prices), min(prices), prices[-1])
+
+    return (None, None, None)
+
+
+def api_admin_backfill_snapshots():
+    j = request.get_json(silent=True) or {}
+    limit = int(j.get("limit", 1500))
+    rows = _q(
+        """
+      SELECT COALESCE(CAST(ts AS REAL), CAST(t AS REAL)/1000.0) AS ts,
+             CAST(close AS REAL) AS price
+      FROM prices
+      ORDER BY ts DESC
+      LIMIT ?
+    """,
+        (limit,),
+    )
+    if not rows:
+        return jsonify({"ok": False, "msg": "no prices"}), 400
+
+    conn = get_db()
+    c = conn.cursor()
+    cols = [r[1] for r in c.execute("PRAGMA table_info(snapshots)").fetchall()]
+    has_simple = {"ts", "cash", "btc", "valuation"}.issubset(set(cols))
+    has_rich = {"ts", "price", "cash", "position_qty", "valuation"}.issubset(set(cols))
+
+    cash = 200
+    btc = 0.0
+    inserted = 0
+    for ts, px in reversed(rows):
+        px = float(px or 0.0)
+        valuation = cash + btc * px
+        if has_rich:
+            c.execute(
+                "INSERT OR IGNORE INTO snapshots(ts,price,cash,position_qty,position_avg,valuation,realized_pnl,unrealized_pnl) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (float(ts), px, cash, btc, None, valuation, None, None),
+            )
+        elif has_simple:
+            c.execute(
+                "INSERT OR IGNORE INTO snapshots(ts,cash,btc,valuation) VALUES(?,?,?,?)",
+                (float(ts), cash, btc, valuation),
+            )
+        else:
+            try:
+                c.execute(
+                    "CREATE TABLE IF NOT EXISTS snapshots(ts REAL PRIMARY KEY, price REAL)"
+                )
+            except Exception:
+                pass
+            c.execute(
+                "INSERT OR IGNORE INTO snapshots(ts,price) VALUES(?,?)", (float(ts), px)
+            )
+        inserted += 1
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "inserted": inserted})
+
+
+def _examples_labeled_since(days: int = 7):
+    horizon = time.time() - days * 86400
+    return _q(
+        """
+      SELECT
+        CAST(ts AS REAL)      AS ts,
+        CAST(p_up AS REAL)    AS p_up,
+        outcome,
+        CAST(ret_k AS REAL)   AS ret_k,
+        CAST(atr_pct AS REAL) AS atr_pct,
+        CAST(tp_pct AS REAL)  AS tp_pct,
+        CAST(sl_pct AS REAL)  AS sl_pct
+      FROM examples
+      WHERE outcome IS NOT NULL
+        AND CAST(ts AS REAL) >= ?
+      ORDER BY ts ASC
+    """,
+        (horizon,),
+    )
+
+
+def _safe_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def api_metrics_reliability():
+    j = request.args or {}
+    days = int(j.get("days", 7))
+    bins = int(j.get("bins", 10))
+    rows = _examples_labeled_since(days)
+    if not rows:
+        return jsonify({"ok": True, "bins": [], "brier": None, "n": 0})
+
+    pairs = []
+    for _, p, outcome, ret_k, *_ in rows:
+        p = _safe_float(p, None)
+        if p is None:
+            continue
+        if outcome == "tp":
+            y = 1.0
+        elif outcome == "sl":
+            y = 0.0
+        else:
+            continue
+        pairs.append((p, y))
+    n = len(pairs)
+    if n == 0:
+        return jsonify({"ok": True, "bins": [], "brier": None, "n": 0})
+
+    brier = sum((p - y) ** 2 for p, y in pairs) / n
+
+    bins = max(5, min(20, int(bins)))
+    step = 1.0 / bins
+    bucket = [[] for _ in range(bins)]
+    for p, y in pairs:
+        idx = min(bins - 1, max(0, int(p / step)))
+        bucket[idx].append((p, y))
+    out = []
+    for i, arr in enumerate(bucket):
+        if arr:
+            p_mean = sum(p for p, _ in arr) / len(arr)
+            y_mean = sum(y for _, y in arr) / len(arr)
+            out.append(
+                {
+                    "bin_from": i * step,
+                    "bin_to": (i + 1) * step,
+                    "p_mean": p_mean,
+                    "hit": y_mean,
+                    "count": len(arr),
+                }
+            )
+        else:
+            out.append(
+                {
+                    "bin_from": i * step,
+                    "bin_to": (i + 1) * step,
+                    "p_mean": None,
+                    "hit": None,
+                    "count": 0,
+                }
+            )
+    return jsonify({"ok": True, "bins": out, "brier": brier, "n": n})
+
+
+def api_drift_check():
+    j = request.get_json(silent=True) or {}
+    days = int(j.get("days", 7))
+    apply_changes = bool(j.get("apply", False))
+
+    with app.test_request_context(f"/api/metrics/reliability?days={days}&bins=10"):
+        rel = json.loads(api_metrics_reliability().get_data(as_text=True))
+    if not rel.get("ok"):
+        return jsonify({"ok": False, "error": "reliability failed"}), 500
+    brier = rel.get("brier")
+    bins = rel.get("bins", [])
+    if brier is None or not bins:
+        return jsonify({"ok": True, "suggestions": [], "brier": brier})
+
+    pts = [
+        (b["p_mean"], b["hit"])
+        for b in bins
+        if b["p_mean"] is not None and b["hit"] is not None and b["count"] >= 5
+    ]
+    if len(pts) >= 3:
+        xbar = sum(p for p, _ in pts) / len(pts)
+        ybar = sum(h for _, h in pts) / len(pts)
+        num = sum((p - xbar) * (h - ybar) for p, h in pts)
+        den = sum((p - xbar) ** 2 for p, _ in pts) or 1e-9
+        slope = num / den
+        bias = ybar - slope * xbar
+    else:
+        slope, bias = 1.0, 0.0
+
+    pbuy = float(_PARAMS.get("PBUY", 0.60))
+    volm = float(_PARAMS.get("VOL_MIN", 0.0025))
+    sigs = float(_PARAMS.get("SIGMOID_SCALE", 3.0))
+
+    good = [b for b in bins if b.get("p_mean") is not None and b.get("hit") is not None]
+    over = (
+        sum((b["p_mean"] - b["hit"]) for b in good) / max(1, len(good)) if good else 0.0
+    )
+
+    suggestions = []
+    if over > 0.03:
+        suggestions.append(
+            {
+                "param": "PBUY",
+                "old": pbuy,
+                "new": min(0.95, pbuy + 0.01),
+                "reason": "overconfident (p>hit)",
+            }
+        )
+    elif over < -0.03:
+        suggestions.append(
+            {
+                "param": "PBUY",
+                "old": pbuy,
+                "new": max(0.50, pbuy - 0.01),
+                "reason": "underconfident (p<hit)",
+            }
+        )
+
+    if brier is not None and brier > 0.25:
+        suggestions.append(
+            {
+                "param": "VOL_MIN",
+                "old": volm,
+                "new": min(0.01, volm * 1.1),
+                "reason": "high Brier",
+            }
+        )
+
+    if abs(slope - 1.0) > 0.2:
+        new_s = max(0.5, min(6.0, sigs * (1.0 + (1.0 - slope) * 0.2)))
+        suggestions.append(
+            {
+                "param": "SIGMOID_SCALE",
+                "old": sigs,
+                "new": new_s,
+                "reason": f"slope~{slope:.2f}",
+            }
+        )
+
+    if apply_changes and suggestions:
+        for s in suggestions:
+            _PARAMS[s["param"]] = s["new"]
+
+    return jsonify(
+        {
+            "ok": True,
+            "brier": brier,
+            "slope": slope,
+            "bias": bias,
+            "suggestions": suggestions,
+            "applied": apply_changes,
+        }
+    )
+
+
+def api_research_gridsearch():
+    j = request.get_json(silent=True) or {}
+    grid = {
+        "PBUY": j.get("PBUY", [float(_PARAMS.get("PBUY", 0.6))]),
+        "VOL_MIN": j.get("VOL_MIN", [float(_PARAMS.get("VOL_MIN", 0.0025))]),
+        "TP_ATR_MULT": j.get("TP_ATR_MULT", [float(_PARAMS.get("TP_ATR_MULT", 0.6))]),
+        "SL_ATR_MULT": j.get("SL_ATR_MULT", [float(_PARAMS.get("SL_ATR_MULT", 0.6))]),
+    }
+    cost = j.get("cost", {})
+    fee_b = float(cost.get("fee_buy", _PARAMS.get("FEE_RATE_BUY", 0.001)))
+    fee_s = float(cost.get("fee_sell", _PARAMS.get("FEE_RATE_SELL", 0.001)))
+    slip = float(cost.get("slippage", _PARAMS.get("SLIPPAGE", 0.0005)))
+    buff = float(cost.get("buffer", _PARAMS.get("FEE_BUFFER_PCT", 0.0002)))
+    avg_cost = fee_b + fee_s + 2 * slip + buff
+
+    rows = _q(
+        """
+      SELECT
+        CAST(p_up AS REAL), outcome, CAST(ret_k AS REAL),
+        CAST(atr_pct AS REAL), CAST(tp_pct AS REAL), CAST(sl_pct AS REAL)
+      FROM examples
+      WHERE outcome IS NOT NULL
+    """
+    )
+    data = []
+    for p, outc, r, atrp, tp, sl in rows:
+        p = _safe_float(p, None)
+        r = _safe_float(r, None)
+        atrp = _safe_float(atrp, None)
+        tp = _safe_float(tp, None)
+        sl = _safe_float(sl, None)
+        if None in (p, r, atrp, tp, sl):
+            continue
+        data.append((p, outc, r, atrp, tp, sl))
+    if not data:
+        return jsonify({"ok": False, "error": "no labeled examples"}), 400
+
+# [MOVED IMPORT]     import itertools
+
+    results = []
+    for PBUY, VOL_MIN, TPM, SLM in itertools.product(
+        grid["PBUY"], grid["VOL_MIN"], grid["TP_ATR_MULT"], grid["SL_ATR_MULT"]
+    ):
+        PBUY = float(PBUY)
+        VOL_MIN = float(VOL_MIN)
+        TPM = float(TPM)
+        SLM = float(SLM)
+        subset = [
+            (p, outc, r, atrp, tp, sl)
+            for (p, outc, r, atrp, tp, sl) in data
+            if (p >= PBUY and atrp >= VOL_MIN)
+        ]
+        if not subset:
+            results.append(
+                {
+                    "PBUY": PBUY,
+                    "VOL_MIN": VOL_MIN,
+                    "TP_ATR_MULT": TPM,
+                    "SL_ATR_MULT": SLM,
+                    "count": 0,
+                    "expectancy": None,
+                    "hit_rate": None,
+                }
+            )
+            continue
+        rets = [_safe_float(r, 0.0) for _, _, r, _, _, _ in subset]
+        exp = (sum(rets) / len(rets)) - avg_cost
+        wins = sum(1 for _, o, _, _, _, _ in subset if o == "tp")
+        losses = sum(1 for _, o, _, _, _, _ in subset if o == "sl")
+        hr = wins / max(1, (wins + losses)) if (wins + losses) > 0 else None
+        results.append(
+            {
+                "PBUY": PBUY,
+                "VOL_MIN": VOL_MIN,
+                "TP_ATR_MULT": TPM,
+                "SL_ATR_MULT": SLM,
+                "count": len(subset),
+                "expectancy": exp,
+                "hit_rate": hr,
+            }
+        )
+    results.sort(
+        key=lambda x: (
+            x["expectancy"] if x["expectancy"] is not None else -1e9,
+            x["count"],
+        ),
+        reverse=True,
+    )
+    return jsonify({"ok": True, "results": results[:50], "avg_cost": avg_cost})
+
+
+def _auto_loop():
+    try:
+        interval = int(os.getenv("AUTO_TRADE_INTERVAL_S", "30"))
+    except Exception:
+        interval = 30
+    app.logger.info(f"auto_loop démarré (interval={interval}s)")
+
+    last_label_ts = 0.0
+    last_learn_ts = 0.0
+
+    while True:
+        try:
+            # Marquer le "heartbeat" du tick pour /api/health
+            now = time.time()
+            STATE["last_tick_ts"] = now
+
+            # Pause soft: on lit le KV à chaque tick
+            if kv_get_bool("AUTO_TRADE_PAUSED", False):
+                STATE["autotrade_paused"] = True
+                _record_trace(
+                    "hold",
+                    float(STATE.get("price") or 0.0),
+                    0.0,
+                    float(STATE.get("p_up", 0.5)),
+                    float(STATE.get("ev", 0.0)),
+                    {"reason": "autotrade_paused"},
+                )
+                # on sort du try vers finally -> sleep
+                continue
+            else:
+                STATE["autotrade_paused"] = False
+
+            # 1) cycle stratégie
+            decide_and_maybe_trade()
+
+            # 2) tâches périodiques
+            now = time.time()
+
+            # --- labeling (toutes ~90s)
+            if now - last_label_ts > 90:
+                try:
+                    nlab = label_examples_k(5)  # labels sur fenêtre 5 minutes
+                    app.logger.info(f"[auto-label] 5m labeled={int(nlab)}")
+                except Exception as e:
+                    app.logger.warning(f"[auto-label] {e}")
+                finally:
+                    last_label_ts = now
+
+            # --- learning / SGD (toutes ~180s)
+            if now - last_learn_ts > 180:
+                try:
+                    _out = sgd_train_online(
+                        limit=1200, lr=0.05, l2=1e-4
+                    )  # peut renvoyer dict ou None
+                    trained = (_out or {}).get("trained")
+                    w_norm = float((_out or {}).get("w_norm", 0.0))
+                    app.logger.info(
+                        f"[auto-learn] trained={trained} w_norm={w_norm:.4f}"
+                    )
+                    app.logger.info(f"[sgd] trained={trained} w_norm={w_norm:.4f}")
+                except Exception as e:
+                    app.logger.warning(f"[auto-learn] {e}")
+                finally:
+                    last_learn_ts = now
+
+        except Exception as e:
+            # Ne jamais laisser la boucle mourir
+            app.logger.exception("[engine] loop error: %s", e)
+        finally:
+            # cadence du moteur (ENGINE_INTERVAL_S ou 'interval')
+            time.sleep(max(3, interval))
+
+
+def hydrate_state_from_snapshot():
+    """Recharge STATE depuis le dernier snapshot si dispo."""
+    snap = get_account_snapshot_safe() or {}
+
+    # prix de secours si absent dans le snapshot
+    px = float(snap.get("price") or STATE.get("price") or get_latest_price() or 0.0)
+
+    set_price(px, source="boot")
+    STATE["cash"] = float(snap.get("cash") or 0.0)
+    STATE["position_qty"] = float(snap.get("btc") or snap.get("position_qty") or 0.0)
+    STATE["valuation"] = float(
+        snap.get("valuation") or (STATE["cash"] + STATE["position_qty"] * px)
+    )
+
+    # état de position dérivé
+    STATE["in_position"] = bool(
+        STATE["position_qty"] and abs(STATE["position_qty"]) > 1e-12
+    )
+    # compteur d’entrées (conservateur)
+    STATE["entries_count"] = 1 if STATE["in_position"] else 0
+
+
+def ensure_snapshot_seed():
+    """
+    Ne crée un snapshot 'seed' que si la table snapshots est vide.
+    S'il y a des trades mais pas de snapshot (ex: DB neuve), on reconstruit
+    depuis trades et on SEED avec cet état reconstruit (pas 200 forcé).
+    """
+    try:
+        with get_db() as c:
+            n_snap = c.execute("SELECT COUNT(*) AS n FROM snapshots").fetchone()["n"]
+            if n_snap and n_snap > 0:
+                return  # déjà des snapshots => ne rien faire
+
+            n_tr = c.execute("SELECT COUNT(*) AS n FROM trades").fetchone()["n"]
+
+        price = float(STATE.get("price") or 0.0)
+
+        if n_tr and n_tr > 0:
+            cash, btc = _rebuild_from_trades_sanitized()
+            val = cash + btc * price
+            account_snapshot_write(
+                {
+                    "ts": time.time(),
+                    "price": price,
+                    "cash": cash,
+                    "position_qty": btc,
+                    "valuation": val,
+                    "realized_pnl": None,
+                    "unrealized_pnl": None,
+                }
+            )
+        else:
+            # VRAI seed uniquement si aucune donnée
+            cash0 = _start_cash()
+            account_snapshot_write(
+                {
+                    "ts": time.time(),
+                    "price": price,
+                    "cash": cash0,
+                    "position_qty": 0.0,
+                    "valuation": cash0,
+                    "realized_pnl": None,
+                    "unrealized_pnl": None,
+                }
+            )
+    except Exception as e:
+        app.logger.exception(f"ensure_snapshot_seed failed: {e}")
+
+
+def _to_binance_symbol(sym: str) -> str:
+    s = (sym or "BTCUSDT").upper().replace("/", "")
+    return s
+
+
+def _feed_price(mid: float, source: str = "na"):
+    """Alimente l’anneau/mémoire courte + STATE + TICKER_CACHE."""
+    try:
+        if mid is None:
+            return
+        mid = float(mid)
+        try:
+            PRICE_RING.append(mid)
+        except Exception:
+            globals()["PRICE_RING"] = deque(maxlen=20)
+            PRICE_RING.append(mid)
+        # best-effort STATE
+        try:
+            STATE["price"] = mid
+            STATE["last_price"] = mid
+            STATE["last_tick_ts"] = time.time()
+        except Exception:
+            pass
+        # maj du snapshot
+        try:
+            with TICKER_LOCK:
+                TICKER_CACHE.update({"last": mid, "ts": time.time(), "source": source})
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _ws_bookticker_worker(symbol: str):
+    """Thread WS Binance bookTicker -> met à jour TICKER_CACHE + _feed_price()."""
+    global WS_THREAD, WS_STOP, TICKER_CACHE
+    if websocket is None:
+        return
+    url = f"wss://stream.binance.com:9443/ws/{_to_binance_symbol(symbol).lower()}@bookTicker"
+    while not WS_STOP.is_set():
+        try:
+            ws = websocket.create_connection(url, timeout=10)
+            while not WS_STOP.is_set():
+                msg = ws.recv()
+                if not msg:
+                    break
+                try:
+                    data = json.loads(msg)
+                    b = float(data.get("b") or data.get("bestBid") or 0.0)
+                    a = float(data.get("a") or data.get("bestAsk") or 0.0)
+                    mid = (b + a) / 2.0 if (b > 0.0 and a > 0.0) else (b or a or 0.0)
+                    with TICKER_LOCK:
+                        TICKER_CACHE.update(
+                            {
+                                "bid": b or None,
+                                "ask": a or None,
+                                "last": mid or None,
+                                "ts": time.time(),
+                                "source": "ws",
+                            }
+                        )
+                    if mid:
+                        _feed_price(mid, source="ws")
+                except Exception:
+                    # tick invalide -> on continue
+                    continue
+            try:
+                ws.close()
+            except Exception:
+                pass
+        except Exception:
+            time.sleep(1.0)
+
+
+def api_price_stream_start():
+    symbol = (request.args.get("symbol") or "BTCUSDT").upper()
+    global WS_THREAD, WS_STOP
+    if websocket is None:
+        return jsonify(ok=False, error="websocket-client non installé"), 500
+    if WS_THREAD and WS_THREAD.is_alive():
+        return jsonify(ok=True, message="already running", symbol=symbol)
+    WS_STOP.clear()
+    WS_THREAD = threading.Thread(
+        target=_ws_bookticker_worker, args=(symbol,), daemon=True
+    )
+    WS_THREAD.start()
+    return jsonify(ok=True, message="started", symbol=symbol)
+
+
+def api_price_stream_stop():
+    global WS_THREAD, WS_STOP
+    try:
+        WS_STOP.set()
+        if WS_THREAD and WS_THREAD.is_alive():
+            WS_THREAD.join(timeout=2.0)
+    except Exception:
+        pass
+    WS_THREAD = None
+    return jsonify(ok=True, message="stopped")
+
+
+def api_price_stream_state():
+    running = bool(WS_THREAD and WS_THREAD.is_alive())
+    return jsonify(ok=True, running=running)
+
+
+def api_debug():
+    try:
+        with TICKER_LOCK:
+            tick = dict(TICKER_CACHE)
+    except Exception:
+        tick = {}
+    try:
+        pr = list(PRICE_RING)
+        pr_len = len(pr)
+        last_vals = pr[-3:]
+    except Exception:
+        pr_len = None
+        last_vals = []
+    return jsonify(
+        {
+            "ok": True,
+            "PRICE_RING_len": pr_len,
+            "PRICE_RING_last3": last_vals,
+            "ticker": tick,
+            "STATE_price": float(STATE.get("price") or 0.0),
+        }
+    )
+
+
+def step(name, prev):
+    if name == "tr":
+        return max(0.0, min(100.0, prev + random.uniform(-3, 3)))
+    # sentiments sur [-1,1]
+    return max(-1.0, min(1.0, prev + random.uniform(-0.02, 0.02)))
+
+
+def emit(self, record: logging.LogRecord):
+    try:
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S%z")
+        msg = self.format(record)
+        LOG_BUFFER.append(f"[{ts}] {msg}")
+    except Exception:
+        pass
+
+
+def row_to_dict(row):
+    # sqlite3.Row est mapping: row["col"] OK ; mais iter(row) donne les noms !
+    try:
+        # mapping/dict-like
+        return {k: (row.get(k) if hasattr(row, "get") else row[k]) for k in KEYS}
+    except Exception:
+        # tuple-like
+        return dict(zip(KEYS, row))
+
+
+def fnum(v, default=0.0):
+    if v is None:
+        return default
+    try:
+        return float(v)
+    except Exception:
+        try:
+            return float(str(v).strip())
+        except Exception:
+            return default
+
+
+def _as_float(x, default=0.0):
+    try:
+        return float(re.search(r"-?\d+(?:\.\d+)?", str(x)).group(0))
+    except Exception:
+        return float(default)
+
+
+def _clean_top(lst):
+    outl = []
+    for it in lst or []:
+        outl.append(
+            {
+                "title": it.get("title"),
+                "url": it.get("url"),
+                "subreddit": it.get("subreddit"),
+                "score": _as_float(it.get("score"), 0.0),
+            }
+        )
+    return outl
+
+
+def roll_hit(w, k):
+    if not w:
+        return 0.0
+    k = min(k, len(w))
+    return float(sum(w[-k:]) / float(k))
+
+
+def _held_qty(sym: str) -> float:
+    q = 0.0
+    try:
+        for side, qty in c.execute(
+            "SELECT side, qty FROM trades2 WHERE symbol=?", (sym,)
+        ).fetchall():
+            q += float(qty or 0.0) if str(side).upper() == "BUY" else -float(qty or 0.0)
+    except Exception:
+        pass
+    return max(0.0, q)
+
+
+def _num(x):
+    return x if isinstance(x, (int, float)) else None
+
+
+def _hr(arr, k):
+    arrk = arr[-k:] if len(arr) >= k else arr
+    if not arrk:
+        return None
+    wins = sum(1 for x in arrk if x == "tp")
+    losses = sum(1 for x in arrk if x == "sl")
+    denom = wins + losses
+    if denom == 0:
+        return None
+    return wins / denom
+
+
+def safe_one(sql, params=()):
+    try:
+        r = _q(sql, params)
+        # r peut être list/tuple de rows, ou dict selon ton helper
+        if isinstance(r, (list, tuple)):
+            if not r:
+                return None
+            row = r[0]
+            if isinstance(row, (list, tuple)):
+                return row[0] if row else None
+            if isinstance(row, dict):
+                return next(iter(row.values()), None)
+        elif isinstance(r, dict):
+            return next(iter(r.values()), None)
+    except Exception:
+        pass
+    return None
+
+
+def table_max_ts(table, ts_col="ts", ms_col="t"):
+    # essaie ts (secondes), puis t (millisecondes)
+    for col, div in ((ts_col, 1.0), (ms_col, 1000.0)):
+        if not col:
+            continue
+        try:
+            v = safe_one(f"SELECT MAX(CAST({col} AS REAL)) FROM {table}")
+            if v is not None:
+                return float(v) / div
+        except Exception:
+            continue
+    return None
+
+
+def age_from_ts(ts_val):
+    try:
+        return None if ts_val is None else float(now - float(ts_val))
+    except Exception:
+        return None
+
+
+def safe_count(table):
+    try:
+        v = safe_one(f"SELECT COUNT(*) FROM {table}")
+        return int(v or 0)
+    except Exception:
+        return 0
+
+
+def _clean(x):
+    if isinstance(x, float) and not math.isfinite(x):
+        return None
+    if isinstance(x, dict):
+        return {k: _clean(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_clean(v) for v in x]
+    return x
+
+
+def _ok(ok, info=None):
+    return {"ok": bool(ok), **({"info": info} if info else {})}
+
+
+# --- REMOVED DUPLICATE BLOCK (lines 12111-12119) ---
+
+
+def ms_to_age_s(ms):
+    if not ms:
+        return None
+    t = ms / 1000.0 if ms > 1e12 else float(ms)
+    return max(0, int(time.time() - t))
+
+
+# --- FIN DU FICHIER ---
+@app.errorhandler(Exception)
+def _on_error(e):
+    try:
+        ERROR_COUNT.labels(type=e.__class__.__name__).inc()
+    except Exception:
+        pass
+
+    try:
+# [MOVED IMPORT]         import traceback
+
+        LOGGER.error("unhandled_exception: %s", e, exc_info=True)
+    finally:
+        return jsonify(error="internal error"), 500
+
+
+@app.get("/api/status")
+def status():
+    """status: endpoint auto-documenté.
+    
+    Routes:
+    - GET /api/status
+    
+    Exemples:
+    - curl -X GET "http://localhost:5000/api/status"
+    """
+    # minimal status; extend as needed
+    return jsonify(ok=True, version=APP_VERSION), 200
+
+
+@app.before_request
+def _metrics_before_request():
+    try:
+        request._start_time = time.time()
+    except Exception:
+        pass
+
+
+@app.after_request
+def _metrics_after_request(response):
+    try:
+        dur = time.time() - getattr(request, "_start_time", time.time())
+        endpoint = request.endpoint or request.path or "unknown"
+        status = str(response.status_code)
+        REQUEST_LATENCY.labels(request.method, endpoint, status).observe(dur)
+        REQUEST_COUNT.labels(request.method, endpoint, status).inc()
+    except Exception:
+        pass
+    return response
+
+
+
+# --- Debug & alias endpoints (auto-generated) ---
+try:
+    from flask import jsonify, request, redirect, url_for
+except Exception:
+    # If Flask isn't available at import time, these endpoints will be no-ops.
+    jsonify = None
+    request = None
+    redirect = None
+    url_for = None
+
+ENABLE_HTTP_WRAPPER_ALIASES = True
+
+if 'app' in globals() and callable(getattr(app, 'route', None)):
+
+    @app.get("/api/debug/routes")
+    def _debug_routes():
+        """
+        Debug: retourne la liste détaillée des routes (méthodes, endpoint, doc, paramètres).
+        
+        Exemple:
+        - curl -X GET "http://localhost:5000/api/debug/routes"
+        """
+        if jsonify is None:
+            # Flask non disponible
+            return {"error": "Flask jsonify indisponible"}, 500
+        out = []
+        for rule in app.url_map.iter_rules():
+            methods = sorted([m for m in rule.methods if m not in {"HEAD", "OPTIONS"}])
+            view = app.view_functions.get(rule.endpoint)
+            doc = ""
+            if view and getattr(view, "__doc__", None):
+                doc = (view.__doc__ or "").strip()
+                # Première ligne seulement pour la vue d'ensemble
+                doc = doc.splitlines()[0]
+            out.append({
+                "rule": str(rule),
+                "methods": methods,
+                "endpoint": rule.endpoint,
+                "view_func": getattr(view, "__name__", None),
+                "params": sorted(list(getattr(rule, "arguments", set()) or [])),
+                "doc": doc,
+            })
+        # Tri par chemin
+        out = sorted(out, key=lambda x: x["rule"])
+        return jsonify(out)
+
+    if ENABLE_HTTP_WRAPPER_ALIASES:
+        # Alias pour anciens wrappers supprimés (collisions). Ces alias appellent les handlers canoniques.
+        # NOTE: Ajustez/renommez si vous souhaitez d'autres chemins.
+        try:
+            # /api/ml/sgd_status (GET) -> alias
+            @app.get("/api/alias/ml/sgd_status")
+            def alias_ml_sgd_status():
+                """Alias de /api/ml/sgd_status (GET)."""
+                return api_sgd_status()
+
+            # /api/ml/eval_simple (GET) -> alias
+            @app.get("/api/alias/ml/eval_simple")
+            def alias_ml_eval_simple():
+                """Alias de /api/ml/eval_simple (GET)."""
+                return api_ml_eval_simple()
+
+            # /api/bandit/status (GET) -> alias
+            @app.get("/api/alias/bandit/status")
+            def alias_bandit_status():
+                """Alias de /api/bandit/status (GET)."""
+                return http_bandit_status()
+
+            # /api/ml/learn_online (POST) -> alias
+            @app.post("/api/alias/ml/learn_online")
+            def alias_ml_learn_online():
+                """Alias de /api/ml/learn_online (POST)."""
+                return http_ml_learn_online()
+
+        except NameError:
+            # Si certaines fonctions n'existent pas dans ce module, ignorez les alias correspondants.
+            pass
+
+# --- End of auto-generated debug & alias block ---
+
+
+
+# --- __main__ entrypoint(s) moved to the end by cleanup ---
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port, debug=False)

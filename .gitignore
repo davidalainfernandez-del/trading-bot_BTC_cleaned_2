@@ -1,0 +1,41 @@
+.DS_Store
+__MACOSX/
+.DS_Store
+__MACOSX/
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtualenv
+.venv/
+env/
+venv/
+
+# === Secrets / env ===
+.env
+.env.*
+*.pem
+*.key
+
+# === Logs / cache / artefacts ===
+logs/
+*.log
+*.tmp
+*.swp
+.cache/
+
+# === Données lourdes / dumps / modèles ===
+dump/
+dumps/
+data/
+*.h5
+*.pkl
+*.joblib
+*.npy
+*.npz
+
+# === Autres
+*.sqlite3

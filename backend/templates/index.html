@@ -1,0 +1,1553 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <link rel="icon" href="data:,">
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Crypto Trader — Vue Globale Multi-Actifs</title>
+  <style>
+    :root{
+      --bg:#0b0c10; --panel:#111218; --muted:#8a8fa3; --text:#e9ecf1; --accent:#66d9ef; --ok:#20c997; --warn:#ffc107; --bad:#ff6b6b; --line:#1b1e27;
+    }
+    *{box-sizing:border-box}
+    body{margin:0; font-family: ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto; background:var(--bg); color:var(--text)}
+    header{position:sticky; top:0; z-index:10; backdrop-filter:saturate(1.2) blur(6px); background:rgba(11,12,16,.65); border-bottom:1px solid var(--line)}
+    .wrap{max-width:1300px; margin:0 auto; padding:14px 18px}
+    h1{font-size:18px; margin:0 0 6px 0}
+    .pill{display:inline-block; font-size:12px; padding:6px 10px; border:1px solid var(--line); border-radius:999px; color:var(--text); background:#0f1117; margin-right:8px}
+    .btn{cursor:pointer; padding:8px 12px; border-radius:10px; border:1px solid var(--line); background:#131521; color:#fff}
+    .btn.on{background:#14251d; border-color:#1f6f4a; color:#9dffd0}
+    .grid{display:grid; grid-template-columns:repeat(12,1fr); gap:12px}
+    .card{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:14px; min-height:72px}
+    .k{font-size:12px; color:var(--muted); margin-bottom:6px}
+    .v{font-weight:700; font-size:20px}
+    .sm{font-size:12px; color:var(--muted)}
+    .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;}
+    table{width:100%; border-collapse:collapse; font-size:13px}
+    th,td{padding:8px 6px; border-bottom:1px solid var(--line)}
+    th{color:#a8acc1; font-weight:600; text-align:left}
+    tr:hover td{background:#141826}
+    .chart{width:100%; height:240px; display:block}
+    .spark{width:100%; height:44px; display:block}
+    .two-col{display:grid; grid-template-columns:1fr 1fr; gap:10px}
+    .chips{display:flex; gap:6px; flex-wrap:wrap}
+    @media(max-width:1024px){ .grid{grid-template-columns:repeat(6,1fr)} }
+    @media(max-width:640px){ .grid{grid-template-columns:repeat(2,1fr)} .two-col{grid-template-columns:1fr} }
+    .smallgrid{display:grid;grid-template-columns:repeat(12,1fr);gap:8px}
+  .mini{background:#0f1117;border:1px solid var(--line);border-radius:12px;padding:8px}
+  .mini h4{margin:0 0 6px 0;font:600 12px/1.2 system-ui;color:#aab}
+  .mini canvas{width:100%;height:120px;display:block}
+  @media(max-width:1024px){ .smallgrid{grid-template-columns:repeat(6,1fr)} }
+  @media(max-width:640px){ .smallgrid{grid-template-columns:repeat(2,1fr)} }
+  .ctrl{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 4px}
+  .ctrl label{font-size:12px;color:#9aa}
+  .ctrl select,.ctrl input[type="range"]{appearance:none;background:#0f1117;border:1px solid var(--line);color:#fff;border-radius:8px;padding:6px}
+  </style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>👤 Compte — Résumé</h1>
+    <div class="chips">
+      <span id="autotrade_badge" class="pill">Autotrade: <b class="mono">—</b></span>
+      <button id="autotrade_toggle" class="btn">Basculer Autotrade</button>
+      <span class="pill">Cash: <b id="cash_usdt" class="mono">—</b></span>
+      <span class="pill">Valeur brute: <b id="gross_value" class="mono">—</b></span>
+      <span class="pill">Valeur nette: <b id="net_value" class="mono">—</b></span>
+      <span class="pill">Dernière mise à jour: <b id="last_update" class="mono">—</b></span>
+      <span class="pill">Dernière action prédite: <b id="last_pred" class="mono">—</b></span>
+      <button id="pauseRefresh" class="btn" type="button">⏸️ Pause</button>
+    </div>
+  </div>
+</header>
+
+<main class="wrap" id="content">
+  <div class="grid" id="grid">
+    <!-- Section: récap positions multi-crypto -->
+    <div class="card" style="grid-column:span 12">
+      <div class="k">Portefeuille — par crypto</div>
+      <div class="sm">Quantités, derniers prix, valorisation par symbole (en direct)</div>
+      <div id="table_positions"></div>
+    </div>
+
+    <!-- Prix: tous les symboles -->
+    <div class="card" style="grid-column:span 6">
+      <div class="k">₿ Prix — Tous les symboles</div>
+      <div id="table_prices"></div>
+    </div>
+
+    <!-- Décisions: maintenant + dernières actions (toutes cryptos) -->
+    <div class="card" style="grid-column:span 6">
+      <div class="k">⚡ Décisions — maintenant & dernières actions</div>
+      <div id="decisions_now"></div>
+      <div style="height:8px"></div>
+      <div class="k">🧾 Décisions (récentes)</div>
+      <div id="decisions_recent"></div>
+    </div>
+
+    <!-- Autotrader — En direct (toutes cryptos) -->
+    <div class="card" style="grid-column:span 12">
+      <div class="k">⚙️ Autotrader — En direct</div>
+      <div id="autotrader_live" class="sm mono" style="white-space:pre-wrap">—</div>
+    </div>
+
+    <!-- Stratégie — Presets & réglages (sélecteur) -->
+    <div class="card" style="grid-column:span 6">
+      <div class="k">🧠 Stratégie — Presets & réglages</div>
+      <div class="two-col">
+        <div>
+          <div class="sm">Symbole</div>
+          <select id="preset_symbol" style="width:100%;padding:8px;border-radius:8px;border:1px solid #1b1e27;background:#0f1117;color:#fff"></select>
+        </div>
+        <div>
+          <div class="sm">Preset</div>
+          <select id="preset_key" style="width:100%;padding:8px;border-radius:8px;border:1px solid #1b1e27;background:#0f1117;color:#fff"></select>
+        </div>
+      </div>
+      <button id="preset_apply" class="btn" style="margin-top:8px">Appliquer</button>
+      <div id="preset_msg" class="sm" style="margin-top:6px">—</div>
+    </div>
+
+    <!-- Trading manuel (sélecteur) -->
+    <div class="card" style="grid-column:span 6">
+      <div class="k">🎮 Trading manuel</div>
+      <div class="two-col">
+        <div>
+          <div class="sm">Symbole</div>
+          <select id="manual_symbol" style="width:100%;padding:8px;border-radius:8px;border:1px solid #1b1e27;background:#0f1117;color:#fff"></select>
+        </div>
+        <div>
+          <div class="sm">Montant USDT (achat) / Qty (vente)</div>
+          <input id="manual_value" class="mono" placeholder="Ex: 50 ou 0.01" style="width:100%;padding:8px;border-radius:8px;border:1px solid #1b1e27;background:#0f1117;color:#fff"/>
+        </div>
+      </div>
+      <div class="chips" style="margin-top:8px">
+        <button id="btn_buy" class="btn">Acheter</button>
+        <button id="btn_sell" class="btn">Vendre</button>
+      </div>
+      <div id="manual_msg" class="sm" style="margin-top:6px">—</div>
+    </div>
+
+<!-- Corrélation Sentiment ↔ Variation — vues lisibles -->
+<div class="card" style="grid-column:span 12">
+  <div class="k">📈 Corrélation Sentiment ↔ Variation — vues lisibles</div>
+  <div class="chips" style="margin-bottom:6px; gap:10px">
+    <label class="sm">Vue:</label>
+    <select id="corr_mode" class="btn" style="padding:6px 10px">
+      <option value="topn" selected>Top-N (barres)</option>
+      <option value="multiples">Petits multiples</option>
+      <option value="compare">Comparaison (lignes)</option>
+    </select>
+
+    <label class="sm">Lissage:</label>
+    <input id="corr_sm" type="range" min="1" max="15" value="5" />
+
+    <label class="sm">Top N:</label>
+    <input id="corr_topn" type="number" min="3" max="10" value="5" style="width:60px" />
+
+    <label class="sm"><input id="corr_abs" type="checkbox"> |corr|</label>
+
+    <label class="sm">Sélection (≤3 pour “lignes”):</label>
+    <select id="corr_select" multiple size="3" style="min-width:170px"></select>
+  </div>
+  <canvas id="corr_canvas" class="chart"></canvas>
+</div>
+
+
+
+    <!-- Statistiques rapides (par crypto, par source) -->
+    <div class="card" style="grid-column:span 12">
+      <div class="k">📊 Statistiques rapides — Reddit / Twitter & Prédictions (par crypto)</div>
+      <div id="table_stats"></div>
+    </div>
+
+    <!-- Graphiques — Sentiments & Tendances (multi-crypto) -->
+    <div class="card" style="grid-column:span 12">
+  <div class="k">📈 Graphiques — Sentiments Reddit/Twitter (petits multiples)</div>
+
+  <div class="ctrl">
+    <label>Source
+      <select id="rt_field">
+        <option value="tw">Twitter (tw)</option>
+        <option value="rd">Reddit (rd)</option>
+      </select>
+    </label>
+    <label>Fenêtre
+      <select id="rt_window">
+        <option>6h</option><option selected>24h</option><option>3d</option><option>7d</option>
+      </select>
+    </label>
+    <label>Lissage EMA
+      <input id="rt_smooth" type="range" min="0" max="20" value="8"/>
+      <span id="rt_smooth_val" class="sm">8</span>
+    </label>
+  </div>
+
+  <div id="rt_grid" class="smallgrid"></div>
+</div>
+
+ <div class="card" style="grid-column:span 12">
+  <div class="k">📈 Graphiques — Google Trends (petits multiples)</div>
+
+  <div class="ctrl">
+    <label>Fenêtre
+      <select id="tr_window">
+        <option>7d</option><option selected>30d</option><option>90d</option>
+      </select>
+    </label>
+    <label>Lissage EMA
+      <input id="tr_smooth" type="range" min="0" max="20" value="6"/>
+      <span id="tr_smooth_val" class="sm">6</span>
+    </label>
+  </div>
+
+  <div id="tr_grid" class="smallgrid"></div>
+</div>
+
+
+    <!-- Overlays prix & sentiment (petits multiples par crypto) -->
+    <div id="overlays_grid" class="grid" style="grid-column:span 12"></div>
+
+    <!-- Historique trades (toutes cryptos) -->
+    <div class="card" style="grid-column:span 12">
+      <div class="k">🧾 Historique de trades — toutes cryptos</div>
+      <div id="table_trades"></div>
+    </div>
+
+    <!-- Logs & Actions (globaux) -->
+    <div class="card" style="grid-column:span 12">
+      <div class="k">🧩 Logs & Actions</div>
+      <div id="logs" class="sm mono" style="white-space:pre-wrap">—</div>
+    </div>
+
+    <!-- Actus crypto (groupées par symbole) -->
+    <div class="card" style="grid-column:span 12">
+      <div class="k">📰 Actus crypto — par symbole</div>
+      <div id="news_all"></div>
+    </div>
+
+<!-- Simulation rapide (sélecteur) -->
+<div class="card" style="grid-column:span 12">
+  <div class="k">🧪 Simulation rapide</div>
+  <div class="chips" style="margin-bottom:8px">
+    <select id="sim_symbol" style="padding:8px;border-radius:8px;border:1px solid #1b1e27;background:#0f1117;color:#fff"></select>
+
+    <!-- ⬇️ type=number + min/step + default value -->
+    <input id="sim_usdt" type="number" min="1" step="0.01" value="100"
+      class="mono" placeholder="USDT ex: 200"
+      style="padding:8px;border-radius:8px;border:1px solid #1b1e27;background:#0f1117;color:#fff"/>
+
+    <input id="sim_tpsl" class="mono" placeholder="TP/SL (%) ex: 1.0/0.5"
+      style="padding:8px;border-radius:8px;border:1px solid #1b1e27;background:#0f1117;color:#fff"/>
+
+    <button id="sim_btn" class="btn">Simuler</button>
+  </div>
+  <div id="sim_out" class="sm mono" style="white-space:pre-wrap">—</div>
+</div>
+
+
+<!-- 🔧 Contrôle global d'auto-refresh (Pause/Reprendre) -->
+<style>
+  #pauseRefresh {
+    position: fixed; right: 12px; bottom: 12px; z-index: 9999;
+    padding: 8px 12px; border-radius: 10px; border: 1px solid #ccc;
+    background:#fff; color:#111; box-shadow: 0 2px 10px rgba(0,0,0,.08); cursor:pointer;
+    font: 500 14px system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+
+  :root { --perfDockZ: 1000; --perfDockBg: rgba(18,18,20,0.85); --perfDockBorder: rgba(255,255,255,0.08); }
+body { padding-bottom: var(--perfDockH, 0px); } /* espace réservé auto par JS */
+
+.perf-dock {
+  position: fixed; left: 0; right: 0; bottom: 0;
+  z-index: var(--perfDockZ);
+  background: var(--perfDockBg);
+  backdrop-filter: blur(6px);
+  border-top: 1px solid var(--perfDockBorder);
+  box-shadow: 0 -10px 25px rgba(0,0,0,0.25);
+  font-size: 14px;
+}
+
+.perf-dock__bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; gap: 8px;
+}
+
+.perf-dock__actions { display: flex; gap: 6px; }
+.btn-mini {
+  padding: 4px 8px; border-radius: 6px; border: 1px solid var(--perfDockBorder);
+  background: rgba(255,255,255,0.06); color: #ddd; cursor: pointer;
+}
+.btn-mini:hover { background: rgba(255,255,255,0.12); }
+
+.perf-dock__inner {
+  display: grid; grid-template-columns: repeat(5, minmax(120px,1fr));
+  gap: 8px 12px; padding: 8px 12px 10px;
+}
+.kv { display: flex; justify-content: space-between; gap: 10px; }
+.kv .k { opacity: .8; }
+.kv .v { font-variant-numeric: tabular-nums; }
+
+.perf-dock.collapsed .perf-dock__inner { display: none; }
+.perf-dock.collapsed #perfToggle { transform: rotate(180deg); }
+
+@media (max-width: 900px) {
+  .perf-dock__inner { grid-template-columns: repeat(2, minmax(120px,1fr)); }
+  .hide-sm { display:none; }
+}
+
+</style>
+
+
+<script>
+ /* ========== Pause/Planificateur (sans auto-pause onglet) ========== */
+  window.PAUSE_REFRESH = false;
+
+  (function () {
+    const btn = document.getElementById('pauseRefresh');
+
+    const updateBtn = () => {
+      btn.textContent = window.PAUSE_REFRESH ? '▶️ Reprendre' : '⏸️ Pause';
+      btn.ariaPressed = String(window.PAUSE_REFRESH);
+      btn.title = window.PAUSE_REFRESH ? 'Reprendre les rafraîchissements (P)' : 'Mettre en pause les rafraîchissements (P)';
+    };
+
+    async function togglePause(withConfirm) {
+      if (!window.PAUSE_REFRESH) {
+        // On va passer en PAUSE
+        if (!withConfirm || confirm('Mettre en pause les rafraîchissements ?\n(Aucun auto-refresh tant que vous ne reprenez pas)')) {
+          window.PAUSE_REFRESH = true;
+          updateBtn();
+        }
+      } else {
+        // On reprend
+        window.PAUSE_REFRESH = false;
+        updateBtn();
+      }
+    }
+
+    // Bouton : confirmation uniquement quand on VA en pause
+    btn.addEventListener('click', () => togglePause(true));
+
+    // Raccourci clavier "P/p" : même logique
+    window.addEventListener('keydown', (e) => {
+      if ((e.key || '').toLowerCase() === 'p') togglePause(true);
+    });
+
+    // ⛔️ PLUS D’AUTO-PAUSE SUR CHANGEMENT D’ONGLET
+    // document.removeEventListener('visibilitychange', ...) // pas nécessaire si tu remplaces le bloc
+
+    updateBtn();
+
+    // Planificateur qui respecte SEULEMENT la pause manuelle
+    window.schedule = (fn, ms) => {
+      const run = async () => {
+        if (window.PAUSE_REFRESH) return setTimeout(run, ms);
+        try { await fn(); } catch (e) { console.warn(e); }
+        setTimeout(run, ms);
+      };
+      setTimeout(run, ms);
+    };
+  })();
+
+  /* ===== CONFIG ===== */
+  const SYMBOLS = (new URLSearchParams(location.search).get("symbols")
+    || "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,PEPEUSDT,DOGEUSDT,LINKUSDT,XRPUSDT,ADAUSDT,AVAXUSDT")
+    .split(",").map(s=>s.trim().toUpperCase());
+
+  const ENDPOINTS = {
+    summary: "/api/portfolio/summary",
+    ticker:  "/api/price/ticker",
+    ohlc:    "/api/price/ohlc",
+    senti_series:"/api/sentiment/series",
+    senti_corr: "/api/sentiment_correlation",
+    ml:      "/api/ml/status",
+    auto_s:  "/api/autotrade_state",
+    auto_t:  "/api/autotrade_toggle",
+    decisions_now: "/api/decisions/now",
+    decisions_recent: "/api/decisions/recent",
+    manual_buy: "/api/force/buy",
+    manual_sell:"/api/force/sell",
+    presets_get:"/api/strategy/presets",
+    presets_set:"/api/strategy/apply",
+    trades:  "/api/trades",
+    logs:    "/api/logs",
+    sim:     "/api/sim/quick",
+    news:    "/api/news",
+    price_avg: "/api/price/avg20"
+  };
+  const OVERLAY_CANVASES = new Map();
+
+  /* ===== UTILS ===== */
+  const EL = id => document.getElementById(id);
+  function setTextStable(el, text){ if (el && el.textContent !== String(text)) el.textContent = String(text); }
+
+  const _CACHE = new Map(); // url -> {t,data,promise}
+  async function jget(url){ const r=await fetch(url); if(!r.ok) throw new Error(url+" -> "+r.status); return await r.json(); }
+  async function jgetCached(url, ttl=10000){
+    const now = Date.now(), v = _CACHE.get(url);
+    if (v && v.data && (now - v.t) < ttl) return v.data;
+    if (v && v.promise) return v.promise;
+    const p = (async()=>{ const d=await jget(url); _CACHE.set(url,{t:Date.now(), data:d}); return d; })()
+      .catch(e=>{ _CACHE.delete(url); throw e; });
+    _CACHE.set(url,{t:0,data:null,promise:p});
+    return p;
+  }
+  async function jpost(url, body){ const r=await fetch(url,{method:"POST", headers:{'Content-Type':'application/json'}, body:JSON.stringify(body||{})}); if(!r.ok) throw new Error(url+" -> "+r.status); return await r.json(); }
+
+  /* ===== FORMATTERS ===== */
+  function fmtNum(x){
+    const n = Number(x);
+    if (!isFinite(n)) return "—";
+    const opts = Math.abs(n) < 1 ? { maximumFractionDigits: 6 } : { maximumFractionDigits: 2 };
+    return n.toLocaleString(undefined, opts);
+  }
+  function fmtUSD(x){
+    const n = Number(x);
+    if (!isFinite(n)) return "—";
+    return n.toLocaleString(undefined, { style:"currency", currency:"USD", maximumFractionDigits: 2 });
+  }
+  function fmtPct(x){
+    const n = Number(x);
+    if (!isFinite(n)) return "—";
+    return n.toLocaleString(undefined, { maximumFractionDigits: 2 }) + "%";
+  }
+  function nowStr(){ return new Date().toLocaleString(); }
+
+  /* ===== HEADER UPDATE ===== */
+  async function refreshHeader(){
+    try{
+      const sum = await jget(ENDPOINTS.summary);
+      const cash = sum.cash_usdt ?? sum.cash ?? 0;
+      EL("cash_usdt").textContent = fmtUSD(cash);
+      const net = sum.net_value_usdt ?? sum.valuation ?? 0;
+      EL("net_value").textContent = fmtUSD(net);
+      let gross = cash;
+      (sum.positions||[]).forEach(p=>{ gross += (+p.qty||0)*(+p.last||0) });
+      EL("gross_value").textContent = fmtUSD(gross||net||0);
+      EL("last_update").textContent = nowStr();
+      try{
+        const recents = await Promise.all(SYMBOLS.map(s=> jget(`${ENDPOINTS.decisions_now}?symbol=${s}`).catch(()=>null)));
+        const latest = recents.map((r,i)=> r? {sym:SYMBOLS[i], ts:+(r.ts||0), act:r.action||"—"}:null).filter(Boolean).sort((a,b)=>b.ts-a.ts)[0];
+        EL("last_pred").textContent = latest ? `${latest.act} (${latest.sym})` : "—";
+      }catch(e){}
+    }catch(e){}
+    try{
+      const a = await jget(ENDPOINTS.auto_s);
+      const badge = EL("autotrade_badge");
+      badge.innerHTML = `Autotrade: <b class="mono">${a.status || (a.paused ? "paused":"running")}</b>`;
+      badge.classList.toggle("on", a.paused===false || a.status==="running");
+    }catch(e){}
+  }
+  EL("autotrade_toggle").addEventListener("click", async ()=>{
+    try{ await jpost(ENDPOINTS.auto_t, {}); await refreshHeader(); }catch(e){ alert("Toggle: "+e.message) }
+  });
+
+  /* ===== TABLES ===== */
+  function buildPositionsTableOnce(){
+    const root = EL("table_positions");
+    if (root.dataset.built === "1") return;
+    const rows = SYMBOLS.map(s => `
+      <tr data-s="${s}">
+        <td>${s.replace("USDT","/USDT")}</td>
+        <td class="mono" id="pos-qty-${s}">0</td>
+        <td class="mono" id="pos-last-${s}">—</td>
+        <td class="mono" id="pos-val-${s}">—</td>
+      </tr>`).join("");
+    root.innerHTML = `
+      <table>
+        <thead><tr><th>Symbole</th><th>Qty</th><th>Dernier</th><th>Valeur</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    root.dataset.built = "1";
+  }
+
+  async function renderPositions(){
+    buildPositionsTableOnce();
+    const sum = await jgetCached(ENDPOINTS.summary, 8000);
+    const mapPos = {};
+    (sum.positions || []).forEach(p => { mapPos[p.symbol] = { qty:+p.qty||0, last:+p.last||0 }; });
+    for (const s of SYMBOLS){
+      const qty  = mapPos[s]?.qty  ?? 0;
+      const last = mapPos[s]?.last ?? 0;
+      const val  = qty * last;
+      setTextStable(EL(`pos-qty-${s}`),  fmtNum(qty));
+      setTextStable(EL(`pos-last-${s}`), fmtNum(last));
+      setTextStable(EL(`pos-val-${s}`),  fmtUSD(val));
+    }
+  }
+
+  function buildPricesTableOnce(){
+    const root = EL("table_prices");
+    if (root.dataset.built === "1") return;
+    const rows = SYMBOLS.map(s => `
+      <tr data-s="${s}">
+        <td>${s.replace("USDT","/USDT")}</td>
+        <td class="mono" id="price-${s}">—</td>
+      </tr>`).join("");
+    root.innerHTML = `
+      <table>
+        <thead><tr><th>Symbole</th><th>Prix</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    root.dataset.built = "1";
+  }
+
+  async function renderPrices(){
+    buildPricesTableOnce();
+    const tuples = await Promise.all(
+      SYMBOLS.map(s => jgetCached(`${ENDPOINTS.ticker}?symbol=${s}`, 5000)
+        .then(r => [s, (r.price ?? r.last ?? r.close)])
+        .catch(()=>[s, null]))
+    );
+    for (const [s, p] of tuples){
+      setTextStable(EL(`price-${s}`), p==null ? "—" : fmtNum(p));
+    }
+  }
+
+  async function renderDecisions(){
+    const nowRoot = EL("decisions_now");
+    const recRoot = EL("decisions_recent");
+    nowRoot.innerHTML = ""; recRoot.innerHTML = "";
+    const nowRows = await Promise.all(SYMBOLS.map(s=> jget(`${ENDPOINTS.decisions_now}?symbol=${s}`).then(r=>({sym:s,...r})).catch(()=>null)));
+    const ulNow = document.createElement("ul"); ulNow.className="sm"; ulNow.style.margin=0; ulNow.style.paddingLeft="16px";
+    (nowRows.filter(Boolean)).forEach(r=>{
+      const li = document.createElement("li");
+      li.innerHTML = `<b>${r.sym}</b> — Action: <b>${(r.action||"—").toUpperCase()}</b> • Confiance: <b>${r.confidence!=null?fmtPct(r.confidence*100):"—"}</b> • Raison: ${r.reason||"—"}`;
+      ulNow.appendChild(li);
+    });
+    nowRoot.appendChild(ulNow);
+
+    const recAll = await Promise.all(SYMBOLS.map(s=> jget(`${ENDPOINTS.decisions_recent}?symbol=${s}&limit=5`).then(js=> (js.items||js||[]).map(x=>({sym:s,...x}))).catch(()=>[])));
+    const rec = recAll.flat().sort((a,b)=>(+(b.ts||0))-(+(a.ts||0))).slice(0,20);
+    const ulRec = document.createElement("ul"); ulRec.className="sm"; ulRec.style.margin=0; ulRec.style.paddingLeft="16px";
+    rec.forEach(r=>{
+      const li=document.createElement("li");
+      li.innerHTML = `<span class="mono">${new Date((+r.ts)||0).toLocaleString()}</span> — <b>${r.sym}</b> — <b>${(r.action||"—").toUpperCase()}</b> (${r.score!=null? Number(r.score).toFixed(3):"—"})`;
+      ulRec.appendChild(li);
+    });
+    recRoot.appendChild(ulRec);
+  }
+
+  async function renderAutotrader(){
+    const root = document.getElementById("autotrader_live");
+    try{
+      const a = await jget(ENDPOINTS.auto_s);
+      const lines = [];
+      lines.push(`Etat: ${a.status || (a.paused ? "paused":"running")}`);
+      if (a.running_for) lines.push(`Uptime: ${a.running_for}s`);
+      if (a.current) lines.push(`En cours: ${JSON.stringify(a.current)}`);
+      if (a.queue?.length) lines.push(`Queue: ${JSON.stringify(a.queue)}`);
+
+      if (a.per_symbol){
+        lines.push("\nDernière décision par symbole:");
+        Object.entries(a.per_symbol).forEach(([s, d])=>{
+          const ts = d.last_at ? new Date(d.last_at).toLocaleTimeString() : "—";
+          lines.push(`• ${s}: ${d.last_decision || "—"} @${d.last_price ?? "—"} (${ts})  ${d.last_reason || ""}`);
+        });
+      }
+
+      if (a.last_actions?.length){
+        lines.push("\nDernières actions (30):");
+        a.last_actions.forEach(it=>{
+          const ts = it.t ? new Date(it.t).toLocaleTimeString() : "";
+          lines.push(`${ts} — ${it.symbol} — ${it.action}` +
+            (it.price!=null? ` @ ${fmtNum(it.price)}`:"") +
+            (it.qty!=null? ` x ${fmtNum(it.qty)}`:"") +
+            (it.why? ` — ${it.why}`:""));
+        });
+      }
+      root.textContent = lines.join("\n") || "—";
+    }catch(e){ root.textContent = "—"; }
+  }
+
+  function buildStatsTableOnce(){
+    const root = EL("table_stats");
+    if (root.dataset.built === "1") return;
+    const rows = SYMBOLS.map(s => `
+      <tr data-s="${s}">
+        <td>${s.replace("USDT","/USDT")}</td>
+        <td class="mono" id="stats-rd-${s}">—</td>
+        <td class="mono" id="stats-tw-${s}">—</td>
+        <td class="mono" id="stats-nw-${s}">—</td>
+        <td class="mono" id="stats-tr-${s}">—</td>
+        <td id="stats-pred-${s}">—</td>
+        <td class="mono" id="stats-avgpx-${s}">—</td>
+      </tr>`).join("");
+    root.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Symbole</th><th>Reddit</th><th>Twitter</th><th>News</th><th>Trends</th>
+            <th>Prédiction (dernière)</th><th>Prix moyen (20)</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    root.dataset.built = "1";
+  }
+
+  async function lastFromSeries(sym, field){
+    try{
+      const js = await jget(`${ENDPOINTS.senti_series}?symbol=${sym}&window=10h&fields=tw,rd,nw,tr`).catch(()=>({}))
+      const arr = js.series || [];
+      if (!arr.length) return null;
+      const lastPoint = arr[arr.length - 1];
+      const raw = lastPoint[field] ?? lastPoint.v;
+      const v = Number(raw);
+      return Number.isFinite(v) ? v : null;
+    }catch(_){ return null; }
+  }
+
+  async function renderStats(){
+    buildStatsTableOnce();
+
+    async function fetchAvgPrice(sym){
+      try{
+        const a = await jgetCached(`${ENDPOINTS.price_avg}?symbol=${sym}`, 15_000);
+        const v = a.avg ?? a.avg20 ?? a.value ?? a.mean ?? null;
+        if (v!=null && !isNaN(+v)) return +v;
+      }catch(_){}
+      try{
+        const o = await jgetCached(`${ENDPOINTS.ohlc}?symbol=${sym}&interval=1m&limit=20`, 15_000);
+        const rows = o.data || o.items || [];
+        if (rows.length){
+          const s = rows.reduce((acc,r)=> acc + (+r.c||0), 0);
+          return s / rows.length;
+        }
+      }catch(_){}
+      return null;
+    }
+
+    for (const s of SYMBOLS){
+      // uniquement /api/sentiment/series (pas d'agrégateur)
+      const [rd, tw, nw, tr] = await Promise.all([
+        lastFromSeries(s,"rd"), lastFromSeries(s,"tw"), lastFromSeries(s,"nw"), lastFromSeries(s,"tr")
+      ]).catch(()=>[null,null,null,null]);
+
+      const [ml, avg] = await Promise.all([
+        jgetCached(`${ENDPOINTS.ml}?symbol=${s}`, 20_000).catch(()=>({})),
+        fetchAvgPrice(s)
+      ]);
+
+      setTextStable(EL(`stats-rd-${s}`), rd!=null ? rd.toFixed(3) : "—");
+      setTextStable(EL(`stats-tw-${s}`), tw!=null ? tw.toFixed(3) : "—");
+      setTextStable(EL(`stats-nw-${s}`), nw!=null ? nw.toFixed(3) : "—");
+      setTextStable(EL(`stats-tr-${s}`), tr!=null ? tr.toFixed(3) : "—");
+      setTextStable(EL(`stats-pred-${s}`), (ml && (ml.last_pred || ml.class)) ? (ml.last_pred || ml.class) : "—");
+      setTextStable(EL(`stats-avgpx-${s}`), avg!=null ? fmtNum(avg) : "—");
+    }
+  }
+
+  /* ===== CHART Helpers: axes lisibles + downsampling ===== */
+  // ---------- Corrélation: helpers ----------
+
+/* ===== Corrélation — helpers de rendu lisible ===== */
+function fmtTimeTick(t){ return new Date(+t||Date.now()).toLocaleTimeString(); }
+function colorScaleCorr(v){
+  const x = Math.max(-1, Math.min(1, Number(v)||0));
+  const hue = x < 0 ? 10 + 30*(1+x) : 40 + 110*x; // rouge -> jaune -> vert
+  return `hsl(${hue},80%,50%)`;
+}
+function smoothSeries(arr, win=5){ // moyenne glissante
+  win = Math.max(1, Math.floor(win));
+  if (!arr?.length || win===1) return arr.slice();
+  const out = [];
+  let sum=0, q=[];
+  for (const p of arr){
+    const v = Number(p.v);
+    if (!Number.isFinite(v)){ out.push({t:p.t, v:null}); continue; }
+    q.push(v); sum+=v; if (q.length>win) sum-=q.shift();
+    out.push({t:p.t, v: sum/q.length});
+  }
+  return out;
+}
+
+async function fetchCorrAll(){
+  const roll = +(document.getElementById("corr_sm")?.value || 5);   // lissage demandé
+  const windowParam = "6h";
+  const all = await Promise.all(
+    SYMBOLS.map(s =>
+      jget(`/api/sentiment_correlation?symbol=${s}&series=1&src=rd&window=${windowParam}&roll=${roll}`)
+        .catch(() => null)
+    )
+  );
+
+  const out = {};
+  all.forEach((js, i) => {
+    const s = SYMBOLS[i];
+    const raw = (js && js.ok ? (js.series || []) : []);
+    const now = Date.now();
+    const arr = raw.map((o, idx) => ({
+      t: now - (raw.length - 1 - idx) * 60_000,             // 1 point / min pour les axes lisibles
+      v: Number((o && o.v) != null ? o.v : o)
+    })).filter(p => Number.isFinite(p.v));
+    out[s] = arr;
+  });
+  return out;
+}
+
+
+
+function recentMean(arr, frac=0.25){
+  if (!arr?.length) return 0;
+  const n = Math.max(1, Math.floor(arr.length*frac));
+  const tail = arr.slice(-n).map(p => (typeof p === 'number' ? p : p.v)).filter(Number.isFinite);
+  if (!tail.length) return 0;
+  return tail.reduce((a,b)=>a+b,0)/tail.length;
+}
+
+/* --- BARRES Top-N --- */
+function drawCorrBarsTopN(canvas, bySym, topN=5, useAbs=false){
+  const padL=110, padR=18, padT=18, padB=26;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width = canvas.clientWidth;
+  const H = canvas.height = 220;
+  ctx.clearRect(0,0,W,H);
+
+  const rows = Object.entries(bySym).map(([s,arr])=>{
+    const v = recentMean(arr, 0.25);
+    return {s, v, k: useAbs? Math.abs(v): v};
+  }).sort((a,b)=>b.k-a.k).slice(0, Math.max(1, Math.min(topN, 10)));
+
+  const vMin=-1, vMax=1;
+  const barH = (H-padT-padB)/rows.length;
+
+  // grille + ticks
+  ctx.fillStyle="#8a8fa3"; ctx.strokeStyle="#1b1e27"; ctx.lineWidth=1;
+  [-1,-0.5,0,0.5,1].forEach(val=>{
+    const x = padL + (W-padL-padR)*((val - vMin)/(vMax - vMin));
+    ctx.beginPath(); ctx.moveTo(x+0.5,padT); ctx.lineTo(x+0.5,H-padB); ctx.stroke();
+    const lab = val.toLocaleString(undefined,{maximumFractionDigits:2});
+    const w = ctx.measureText(lab).width;
+    ctx.fillText(lab, x - w/2, H-6);
+  });
+
+  rows.forEach((r,i)=>{
+    const y = padT + i*barH + barH*0.18;
+    const x0 = padL + (W-padL-padR)*((Math.min(0,r.v)-vMin)/(vMax-vMin));
+    const x1 = padL + (W-padL-padR)*((Math.max(0,r.v)-vMin)/(vMax-vMin));
+    ctx.fillStyle = colorScaleCorr(r.v);
+    ctx.fillRect(Math.min(x0,x1), y, Math.abs(x1-x0), barH*0.64);
+    ctx.fillStyle="#a8acc1"; ctx.fillText(r.s, 8, y+barH*0.62);
+    ctx.fillStyle="#ddd"; ctx.fillText(r.v.toFixed(2), Math.max(x0,x1)+6, y+barH*0.62);
+  });
+}
+
+/* --- Petits multiples (sparklines normalisées) --- */
+function drawCorrSmallMultiples(canvas, bySym){
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width = canvas.clientWidth;
+  const H = canvas.height = 240;
+  ctx.clearRect(0,0,W,H);
+
+  const syms = Object.keys(bySym);
+  const cols = Math.min(5, Math.max(3, Math.ceil(Math.sqrt(syms.length))));
+  const rows = Math.ceil(syms.length/cols);
+  const cellW = W/cols, cellH = H/rows;
+
+  syms.forEach((s,idx)=>{
+    const c = idx % cols, r = Math.floor(idx/cols);
+    const x0 = c*cellW + 8, y0 = r*cellH + 6, w = cellW-16, h = cellH-14;
+
+    // cadre
+    ctx.strokeStyle="#1b1e27"; ctx.strokeRect(x0, y0, w, h);
+    ctx.fillStyle="#a8acc1"; ctx.fillText(s, x0+4, y0+12);
+
+    const arr = bySym[s];
+    if(!arr?.length) return;
+    const N = arr.length;
+    ctx.beginPath();
+    for (let i=0;i<N;i++){
+      const x = x0 + (w)*(i/(N-1||1));
+      const v = Math.max(-1, Math.min(1, arr[i].v));
+      const y = y0 + h*(1-(v+1)/2);
+      (i? ctx.lineTo(x,y) : ctx.moveTo(x,y));
+    }
+    ctx.lineWidth = 1.2; ctx.strokeStyle = "#66d9ef"; ctx.stroke();
+  });
+}
+
+/* --- Comparaison (lignes ≤ 3) avec axes --- */
+function drawCorrCompareLines(canvas, selMap){
+  const padL=50, padR=18, padT=12, padB=24;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width = canvas.clientWidth;
+  const H = canvas.height = 220;
+  ctx.clearRect(0,0,W,H);
+
+  // axes Y
+  ctx.strokeStyle="#1b1e27"; ctx.fillStyle="#8a8fa3"; ctx.lineWidth=1;
+  [-1,-0.5,0,0.5,1].forEach((val,i)=>{
+    const y = padT + (H-padT-padB)*(1-(val+1)/2);
+    ctx.beginPath(); ctx.moveTo(padL, y+0.5); ctx.lineTo(W-padR, y+0.5); ctx.stroke();
+    ctx.fillText(val.toFixed(1), 8, y-2);
+  });
+
+  // repères X (gauche/milieu/droite)
+  const any = Object.values(selMap)[0] || [];
+  if (any.length){
+    const tMin = any[0].t, tMax = any[any.length-1].t;
+    [tMin, (tMin+tMax)/2, tMax].forEach(t=>{
+      const x = padL + (W-padL-padR)*((t - tMin)/(tMax - tMin || 1));
+      ctx.beginPath(); ctx.moveTo(x+0.5, H-padB); ctx.lineTo(x+0.5, H-padB+4); ctx.stroke();
+      const lab = fmtTimeTick(t); const w = ctx.measureText(lab).width;
+      ctx.fillText(lab, Math.min(W-padR-w, Math.max(padL, x-w/2)), H-6);
+    });
+  }
+
+  // séries (max 3)
+  const colors = ["#20c997","#ff6b6b","#339af0"];
+  Object.entries(selMap).forEach(([s,arr],i)=>{
+    if(!arr?.length) return;
+    ctx.beginPath();
+    arr.forEach((p,j)=>{
+      const x = padL + (W-padL-padR)*(j/(arr.length-1||1));
+      const y = padT + (H-padT-padB)*(1-(Math.max(-1,Math.min(1,p.v))+1)/2);
+      (j? ctx.lineTo(x,y): ctx.moveTo(x,y));
+    });
+    ctx.lineWidth = 1.6; ctx.strokeStyle = colors[i%colors.length]; ctx.stroke();
+    ctx.fillStyle = colors[i%colors.length]; ctx.fillText(s, W-padR-70, padT+14+i*14);
+  });
+}
+
+/* --- Contrôleur principal --- */
+let _corrCache = null;
+async function renderCorrPanel(){
+  const cv = document.getElementById("corr_canvas");
+  const mode = (document.getElementById("corr_mode")?.value || "topn");
+  const win  = +(document.getElementById("corr_sm")?.value || 5);
+  const topN = +(document.getElementById("corr_topn")?.value || 5);
+  const absF = document.getElementById("corr_abs")?.checked || false;
+
+  if (!_corrCache) _corrCache = await fetchCorrAll();
+  // lissage par symbole
+  const smoothed = {};
+  for (const [s,arr] of Object.entries(_corrCache)){
+    smoothed[s] = smoothSeries(arr, win);
+  }
+
+  if (mode === "topn"){
+    drawCorrBarsTopN(cv, smoothed, topN, absF);
+  } else if (mode === "multiples"){
+    drawCorrSmallMultiples(cv, smoothed);
+  } else { // compare
+    const sel = document.getElementById("corr_select");
+    const chosen = Array.from(sel?.selectedOptions||[]).map(o=>o.value).slice(0,3);
+    const map = {};
+    (chosen.length? chosen : SYMBOLS.slice(0,3)).forEach(s=> map[s]=smoothed[s]);
+    drawCorrCompareLines(cv, map);
+  }
+}
+
+/* remplir la liste multi-sélection */
+function fillCorrSelectOnce(){
+  const sel = document.getElementById("corr_select");
+  if (!sel || sel.dataset.built==="1") return;
+  SYMBOLS.forEach(s=>{
+    const o = document.createElement("option");
+    o.value = s; o.textContent = s.replace("USDT","/USDT");
+    sel.appendChild(o);
+  });
+  sel.dataset.built="1";
+}
+
+/* écouter changements UI */
+["corr_mode","corr_sm","corr_topn","corr_abs","corr_select"].forEach(id=>{
+  const el = document.getElementById(id);
+  if (el) el.addEventListener("input", ()=>renderCorrPanel());
+});
+
+
+
+
+  function colorScaleCorr(v){ // v ∈ [-1,1]
+  // Hue: -1 -> 0° (rouge), 0 -> 40° (jaune/gris), +1 -> 150° (vert)
+  const clamped = Math.max(-1, Math.min(1, Number(v)||0));
+  const hue = clamped < 0 ? 0 + 40 * (1 + clamped) : 40 + 110 * clamped;
+  const sat = 80; const light = 50;
+  return `hsl(${hue}, ${sat}%, ${light}%)`;
+}
+function downsampleBinsTimed(arr, tMin, tMax, bins){
+  // arr: [{t,v}], retourne {bins: [{t,v}], centers: [t]}
+  if (!arr?.length || bins<=0) return {bins:[], centers:[]};
+  const step = (tMax - tMin) / bins;
+  const buckets = Array.from({length:bins}, ()=>({sum:0, n:0}));
+  for (const p of arr){
+    const t = +p.t; const v = +p.v;
+    if (!Number.isFinite(t) || !Number.isFinite(v)) continue;
+    let k = Math.floor((t - tMin) / Math.max(1, step));
+    if (k<0) k = 0; if (k>=bins) k = bins-1;
+    buckets[k].sum += v; buckets[k].n++;
+  }
+  const out = []; const centers = [];
+  for (let i=0;i<bins;i++){
+    const n = buckets[i].n;
+    const v = n ? (buckets[i].sum / n) : null;
+    const t = tMin + (i+0.5)*step;
+    centers.push(t);
+    out.push({t, v});
+  }
+  return {bins: out, centers};
+}
+function drawCorrHeatmap(canvas, seriesBySym, bins=60){
+  const padL=72, padR=18, padT=18, padB=30;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width = canvas.clientWidth;
+  const H = canvas.height = canvas.clientHeight || 240;
+  ctx.clearRect(0,0,W,H);
+
+  const symbols = Object.keys(seriesBySym);
+  if (!symbols.length){ ctx.fillStyle="#888"; ctx.fillText("Aucune donnée", 10, 18); return; }
+
+  // bornes temps globales
+  const all = Object.values(seriesBySym).flat();
+  const tMin = Math.min(...all.map(p=>+p.t||0));
+  const tMax = Math.max(...all.map(p=>+p.t||0));
+  if (!(isFinite(tMin)&&isFinite(tMax)&&tMax>tMin)){ ctx.fillStyle="#888"; ctx.fillText("Données insuffisantes", 10, 18); return; }
+
+  const rowH = (H-padT-padB)/symbols.length;
+  const colW = (W-padL-padR)/bins;
+
+  // axes X (début/milieu/fin)
+  ctx.strokeStyle="#1b1e27"; ctx.fillStyle="#8a8fa3"; ctx.lineWidth=1;
+  const xt = [tMin, (tMin+tMax)/2, tMax];
+  xt.forEach(t=>{
+    const x = padL + (W-padL-padR)*((t - tMin)/(tMax - tMin));
+    ctx.beginPath(); ctx.moveTo(x+0.5, H-padB); ctx.lineTo(x+0.5, H-padB+4); ctx.stroke();
+    const lab = fmtTimeTick(t); const w = ctx.measureText(lab).width;
+    ctx.fillText(lab, Math.min(W-padR-w, Math.max(padL, x-w/2)), H-6);
+  });
+
+  // Y labels + ligne de séparation
+  symbols.forEach((s,i)=>{
+    const y = padT + i*rowH;
+    ctx.fillStyle="#a8acc1"; ctx.fillText(s, 6, y + rowH*0.66);
+    ctx.strokeStyle="#1b1e27"; ctx.beginPath();
+    ctx.moveTo(padL, y+rowH+0.5); ctx.lineTo(W-padR, y+rowH+0.5); ctx.stroke();
+  });
+
+  // Heatmap cells
+  symbols.forEach((s,i)=>{
+    const y0 = padT + i*rowH;
+    const {bins: binned} = downsampleBinsTimed(seriesBySym[s], tMin, tMax, bins);
+    binned.forEach((p,k)=>{
+      const x0 = padL + k*colW;
+      ctx.fillStyle = (p.v==null) ? "#10141f" : colorScaleCorr(p.v);
+      ctx.fillRect(x0, y0, colW+1, rowH+1);
+    });
+  });
+
+  // Légende couleur
+  const gW = 140, gH = 10, gx = W-padR-gW-4, gy = padT-6;
+  const grad = ctx.createLinearGradient(gx,0,gx+gW,0);
+  grad.addColorStop(0, colorScaleCorr(-1));
+  grad.addColorStop(0.5, colorScaleCorr(0));
+  grad.addColorStop(1, colorScaleCorr(1));
+  ctx.fillStyle = grad; ctx.fillRect(gx, gy, gW, gH);
+  ctx.fillStyle="#8a8fa3"; ctx.fillText("-1", gx-14, gy+gH);
+  ctx.fillText("0", gx+gW/2-3, gy+gH);
+  ctx.fillText("+1", gx+gW+6, gy+gH);
+}
+
+function drawCorrBars(canvas, seriesBySym){
+  const padL=90, padR=18, padT=18, padB=28;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width = canvas.clientWidth;
+  const H = canvas.height = canvas.clientHeight || 240;
+  ctx.clearRect(0,0,W,H);
+
+  // moyenne récente (dernier 25% des points)
+  const rows = Object.entries(seriesBySym).map(([s,arr])=>{
+    const n = arr.length; if(!n) return {s,v:0};
+    const start = Math.floor(n*0.75);
+    const slice = arr.slice(start);
+    const vals = slice.map(p=>+p.v).filter(Number.isFinite);
+    const v = vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : 0;
+    return {s, v};
+  }).sort((a,b)=>b.v-a.v);
+
+  const n = rows.length;
+  const barH = (H-padT-padB)/Math.max(1,n);
+  const vMin = -1, vMax = 1;
+
+  // axe X  (valeurs)
+  ctx.fillStyle="#8a8fa3"; ctx.strokeStyle="#1b1e27"; ctx.lineWidth=1;
+  const ticks=[-1,-0.5,0,0.5,1];
+  ticks.forEach(val=>{
+    const x = padL + (W-padL-padR)*((val - vMin)/(vMax - vMin));
+    ctx.beginPath(); ctx.moveTo(x+0.5,padT); ctx.lineTo(x+0.5,H-padB); ctx.stroke();
+    const lab = val.toLocaleString(undefined,{maximumFractionDigits:2});
+    const w = ctx.measureText(lab).width;
+    ctx.fillText(lab, x - w/2, H-6);
+  });
+
+  rows.forEach((r,i)=>{
+    const y = padT + i*barH + barH*0.15;
+    const x0 = padL + (W-padL-padR)*((Math.min(0,r.v)-vMin)/(vMax-vMin));
+    const x1 = padL + (W-padL-padR)*((Math.max(0,r.v)-vMin)/(vMax-vMin));
+    ctx.fillStyle = colorScaleCorr(r.v);
+    ctx.fillRect(Math.min(x0,x1), y, Math.abs(x1-x0), barH*0.7);
+    ctx.fillStyle="#a8acc1"; ctx.fillText(r.s, 8, y + barH*0.62);
+    ctx.fillStyle="#ddd"; ctx.fillText(r.v.toFixed(2), Math.max(x0,x1)+6, y + barH*0.62);
+  });
+}
+
+  function downsampleByStride(arr, maxPoints=240){
+    if (!arr || arr.length<=maxPoints) return arr||[];
+    const stride = Math.ceil(arr.length/maxPoints);
+    const out=[]; for (let i=0;i<arr.length;i+=stride) out.push(arr[i]);
+    if (out[out.length-1] !== arr[arr.length-1]) out.push(arr[arr.length-1]);
+    return out;
+  }
+  function fmtTimeTick(ms){
+    const d=new Date(ms), now=Date.now(), day=86400000;
+    return (now-ms<day) ? d.toLocaleTimeString() : d.toLocaleDateString();
+  }
+  function palette(i){ const colors=["#66d9ef","#ffd166","#06d6a0","#ff6b6b","#c792ea","#50fa7b","#ff79c6","#f1fa8c","#8be9fd","#ffa07a"]; return colors[i%colors.length]; }
+
+  // Multi-séries temporelles avec axes/grille — attend {t, v}
+  function drawTimeLines(canvas, seriesMap, opts={}){
+    const padL = opts.padL ?? 48, padR = opts.padR ?? 12, padT = 12, padB = 28;
+    const ctx = canvas.getContext("2d");
+    const W = canvas.width  = canvas.clientWidth;
+    const H = canvas.height = canvas.clientHeight || 240;
+    ctx.clearRect(0,0,W,H);
+
+    const allPts = Object.values(seriesMap).flat();
+    if (!allPts.length){ 
+      ctx.fillStyle="#888"; ctx.fillText("Aucune donnée", 10, 18); return;
+    }
+    const tMin = Math.min(...allPts.map(p=>+p.t||0));
+    const tMax = Math.max(...allPts.map(p=>+p.t||0));
+    const vAll = allPts.map(p=>+p.v).filter(Number.isFinite);
+    const vMin = Math.min(...vAll), vMax = Math.max(...vAll);
+    const x = (t)=> padL + (W-padL-padR)*((t - tMin)/Math.max(1,(tMax-tMin)));
+    const y = (v)=> H-padB - (H-padT-padB)*((v - vMin)/Math.max(1,(vMax-vMin)));
+
+    // grille horizontale + labels Y
+    ctx.strokeStyle="#1b1e27"; ctx.fillStyle="#8a8fa3"; ctx.lineWidth=1;
+    const yTicks = 4;
+    for (let i=0;i<=yTicks;i++){
+      const frac=i/yTicks, yy = H-padB - (H-padT-padB)*frac;
+      ctx.beginPath(); ctx.moveTo(padL, yy+0.5); ctx.lineTo(W-padR, yy+0.5); ctx.stroke();
+      const val = vMin + (vMax-vMin)*frac;
+      ctx.fillText(val.toLocaleString(undefined,{maximumFractionDigits:2}), 4, yy-2);
+    }
+
+    // axe X: début / milieu / fin
+    const xTicks = [tMin, (tMin+tMax)/2, tMax];
+    xTicks.forEach((t,i)=>{
+      const xx = x(t);
+      ctx.beginPath(); ctx.moveTo(xx+0.5, H-padB); ctx.lineTo(xx+0.5, H-padB+4); ctx.stroke();
+      const label = fmtTimeTick(t);
+      const w = ctx.measureText(label).width;
+      ctx.fillText(label, Math.min(W-padR-w, Math.max(padL, xx - w/2)), H-6);
+    });
+
+    // courbes + légende
+    let legendX = padL, legendY = padT;
+    Object.keys(seriesMap).forEach((name,i)=>{
+      const arr = seriesMap[name]||[];
+      if(!arr.length) return;
+      ctx.beginPath();
+      arr.forEach((p,j)=>{ const xx=x(+p.t), yy=y(+p.v); j? ctx.lineTo(xx,yy) : ctx.moveTo(xx,yy); });
+      ctx.lineWidth=1.6; ctx.strokeStyle=palette(i); ctx.stroke();
+      // légende
+      ctx.fillStyle=palette(i);
+      ctx.fillRect(legendX, legendY-10, 14, 3);
+      ctx.fillStyle="#a8acc1";
+      ctx.fillText(name, legendX+18, legendY-6);
+      legendX += ctx.measureText(name).width + 60;
+      if (legendX > W-160){ legendX = padL; legendY += 14; }
+    });
+  }
+
+  // Overlay prix (axe gauche) + sentiment (axe droite) — {t,v} et {t,v}
+  function drawOverlay(canvas, pxSeries, twSeries){
+    const padL = 56, padR = 56, padT = 12, padB = 28;
+    const ctx = canvas.getContext("2d");
+    const W = canvas.width  = canvas.clientWidth;
+    const H = canvas.height = canvas.clientHeight || 240;
+    ctx.clearRect(0,0,W,H);
+
+    const allT = [...(pxSeries||[]), ...(twSeries||[])].map(p=>+p.t||0);
+    if (!allT.length){ ctx.fillStyle="#888"; ctx.fillText("Aucune donnée", 10, 18); return; }
+    const tMin=Math.min(...allT), tMax=Math.max(...allT);
+    const x = (t)=> padL + (W-padL-padR)*((t - tMin)/Math.max(1,(tMax-tMin)));
+
+    const pxVals = (pxSeries||[]).map(p=>+p.v).filter(Number.isFinite);
+    const pLo = Math.min(...pxVals), pHi=Math.max(...pxVals);
+    const yP = (v)=> H-padB - (H-padT-padB)*((v - pLo)/Math.max(1,(pHi-pLo)));
+
+    const twVals = (twSeries||[]).map(p=>+p.v).filter(Number.isFinite).map(v=>Math.max(-1, Math.min(1, v)));
+    const sLo = -1, sHi = 1;
+    const yS = (v)=> H-padB - (H-padT-padB)*((v - sLo)/(sHi - sLo));
+
+    // grille horizontale
+    ctx.strokeStyle="#1b1e27"; ctx.lineWidth=1; ctx.fillStyle="#8a8fa3";
+    for (let i=0;i<=4;i++){
+      const frac=i/4, yy = H-padB - (H-padT-padB)*frac;
+      ctx.beginPath(); ctx.moveTo(padL, yy+0.5); ctx.lineTo(W-padR, yy+0.5); ctx.stroke();
+    }
+    // ticks Y gauche (prix)
+    for (let i=0;i<=4;i++){
+      const val = pLo + (pHi-pLo)*(i/4);
+      const yy = yP(val);
+      const lab = val.toLocaleString(undefined,{maximumFractionDigits:2});
+      ctx.fillText(lab, 4, yy-2);
+    }
+    // ticks Y droite (sentiment)
+    const sLabs=[-1,-0.5,0,0.5,1];
+    sLabs.forEach(v=>{
+      const yy=yS(v), lab = v.toLocaleString(undefined,{maximumFractionDigits:2});
+      const w = ctx.measureText(lab).width;
+      ctx.fillText(lab, W-padR+8, yy-2);
+    });
+    // ticks X
+    const xs=[tMin,(tMin+tMax)/2,tMax];
+    xs.forEach(t=>{
+      const xx=x(t);
+      ctx.beginPath(); ctx.moveTo(xx+0.5, H-padB); ctx.lineTo(xx+0.5, H-padB+4); ctx.stroke();
+      const label=fmtTimeTick(t), w=ctx.measureText(label).width;
+      ctx.fillText(label, Math.min(W-padR-w, Math.max(padL, xx-w/2)), H-6);
+    });
+
+    // courbe prix
+    if (pxSeries?.length){
+      ctx.beginPath();
+      pxSeries.forEach((p,j)=>{ const xx=x(+p.t), yy=yP(+p.v); j? ctx.lineTo(xx,yy) : ctx.moveTo(xx,yy); });
+      ctx.lineWidth=1.8; ctx.strokeStyle="#339af0"; ctx.stroke();
+    }
+    // courbe sentiment
+    if (twSeries?.length){
+      ctx.beginPath();
+      twSeries.forEach((p,j)=>{ const xx=x(+p.t), yy=yS(Math.max(-1,Math.min(1,+p.v))); j? ctx.lineTo(xx,yy):ctx.moveTo(xx,yy); });
+      ctx.lineWidth=1.4; ctx.strokeStyle="#20c997"; ctx.stroke();
+    }
+    // légende
+    ctx.fillStyle="#339af0"; ctx.fillRect(padL, padT-10, 14, 3); ctx.fillStyle="#a8acc1"; ctx.fillText("Prix", padL+18, padT-6);
+    ctx.fillStyle="#20c997"; ctx.fillRect(padL+60, padT-10, 14, 3); ctx.fillStyle="#a8acc1"; ctx.fillText("Sentiment", padL+78, padT-6);
+  }
+
+  /* ===== CHART Renders ===== */
+async function renderCorrChart(){
+  const cv = EL("chart_corr");
+  const viewSel = EL("corr_view");
+  const binsInp = EL("corr_bins");
+  const view = (viewSel?.value || "heatmap");
+  const bins = +(binsInp?.value || 60);
+
+  const now = Date.now();
+  const perSym = await Promise.all(
+    SYMBOLS.map(s =>
+      jget(`${ENDPOINTS.senti_corr}?symbol=${s}&series=1`)
+        .then(js => {
+          const arr = (js.series||[]).map((x,i)=>({
+            t: now - (js.series.length - 1 - i)*60_000, // pas de minute synthétique
+            v: Number(x?.v ?? x)
+          }));
+          return [s, arr.filter(p=>Number.isFinite(p.v))];
+        })
+        .catch(()=>[s, []])
+    )
+  );
+  const seriesBySym = Object.fromEntries(perSym);
+
+  if (view === "heatmap") {
+    drawCorrHeatmap(cv, seriesBySym, bins);
+  } else if (view === "bars") {
+    drawCorrBars(cv, seriesBySym);
+  } else { // "lines" -> réutilise ton renderer temporel générique
+    const map = {};
+    Object.entries(seriesBySym).forEach(([s,arr])=>{
+      map[s] = downsampleByStride(arr, 240); // {t,v} déjà OK
+    });
+    drawTimeLines(cv, map);
+  }
+}
+["corr_view","corr_bins"].forEach(id=>{
+  const el = EL(id); if (el) el.addEventListener("input", renderCorrChart);
+});
+
+
+
+
+
+  // Sentiment Twitter (12h)
+/* ---------- helpers dessin avec axes + lissage + décimation ---------- */
+function emaSmooth(arr, k){
+  if (!k || k<=1) return arr.slice();
+  const a = 2/(k+1);
+  let prev = arr[0].v, out = [{t:arr[0].t, v:prev}];
+  for (let i=1;i<arr.length;i++){ prev = a*arr[i].v + (1-a)*prev; out.push({t:arr[i].t, v:prev}); }
+  return out;
+}
+function decimate(arr, maxN=200){
+  if (arr.length <= maxN) return arr;
+  const step = Math.ceil(arr.length / maxN);
+  const out = [];
+  for (let i=0;i<arr.length;i+=step) out.push(arr[i]);
+  return out;
+}
+function niceRange(lo, hi){
+  if (!isFinite(lo)||!isFinite(hi)||lo===hi){ return {lo: lo-1, hi: hi+1}; }
+  const span = hi - lo, pad = span*0.08;
+  return {lo: lo-pad, hi: hi+pad};
+}
+function drawMiniLine(canvas, data, opts={}){
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width  = canvas.clientWidth;
+  const H = canvas.height = canvas.clientHeight;
+  ctx.clearRect(0,0,W,H);
+
+  if (!data.length){ ctx.fillStyle="#999"; ctx.fillText("—", 6, H-6); return; }
+
+  const t0 = data[0].t, t1 = data[data.length-1].t;
+  const vals = data.map(p=>p.v).filter(Number.isFinite);
+  const rng = niceRange(Math.min(...vals), Math.max(...vals));
+  const x = t => ( (t - t0) / (t1 - t0 || 1) ) * (W-50) + 40;
+  const y = v => H - 20 - ( (v - rng.lo) / (rng.hi - rng.lo || 1) ) * (H-40);
+
+  // axes
+  ctx.strokeStyle="#2a2d39"; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(40,10); ctx.lineTo(40,H-20); ctx.lineTo(W-10,H-20); ctx.stroke();
+
+  // ticks Y
+  ctx.fillStyle="#6e7385"; ctx.font="11px system-ui";
+  for(let i=0;i<=4;i++){
+    const vv = rng.lo + (rng.hi-rng.lo)*i/4;
+    const yy = y(vv);
+    ctx.strokeStyle="#1c2030"; ctx.beginPath(); ctx.moveTo(40,yy); ctx.lineTo(W-10,yy); ctx.stroke();
+    ctx.fillText(vv.toFixed(2), 4, yy+3);
+  }
+  // ticks X (début/fin)
+  const fmt = d => new Date(d).toLocaleTimeString();
+  ctx.fillText(fmt(t0), 40, H-6);
+  ctx.fillText(fmt(t1), W-80, H-6);
+
+  // zero line si dedans
+  if (rng.lo < 0 && rng.hi > 0){
+    const zy = y(0); ctx.strokeStyle="#3a3f55"; ctx.setLineDash([4,4]);
+    ctx.beginPath(); ctx.moveTo(40,zy); ctx.lineTo(W-10,zy); ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  // courbe
+  ctx.strokeStyle = opts.color || "#66d9ef";
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  data.forEach((p,i)=>{ const xx=x(p.t), yy=y(p.v); i?ctx.lineTo(xx,yy):ctx.moveTo(xx,yy); });
+  ctx.stroke();
+}
+
+/* ---------- fetch séries (préserve t), puis lisse + décime ---------- */
+async function fetchSentiSeries(sym, field, windowStr){
+  const js = await jgetCached(`/api/sentiment/series?symbol=${sym}&window=${windowStr}&fields=${field}`, 20_000);
+  const series = (js.series||[]).map(r => ({t:+r.t, v:+(r[field] ?? r.v)})).filter(p=>Number.isFinite(p.v));
+  return series;
+}
+async function fetchTrendsSeries(sym, windowStr){
+  const js = await jgetCached(`/api/sentiment/series?symbol=${sym}&window=${windowStr}&fields=tr`, 20_000);
+  const series = (js.series||[]).map(r => ({t:+r.t, v:+(r.tr ?? r.v)})).filter(p=>Number.isFinite(p.v));
+  return series;
+}
+const COLOR_POOL = ["#66d9ef","#ffd166","#06d6a0","#ff6b6b","#c792ea","#50fa7b","#ff79c6","#f1fa8c","#8be9fd","#ffa07a"];
+
+/* ---------- rendus petits multiples ---------- */
+async function renderSentiRT(){
+  const field   = document.getElementById("rt_field")?.value || "tw";
+  const windowS = document.getElementById("rt_window")?.value || "24h";
+  const smoothK = +document.getElementById("rt_smooth")?.value || 8;
+  const lbl = document.getElementById("rt_smooth_val"); if (lbl) lbl.textContent = smoothK;
+
+  const grid = document.getElementById("rt_grid");
+  grid.innerHTML = "";
+  // fetch en parallèle
+  const packs = await Promise.all(SYMBOLS.map(s=> fetchSentiSeries(s, field, windowS).then(arr=>{
+    const sm = emaSmooth(decimate(arr, 220), smoothK);
+    return {s, data: sm};
+  }).catch(()=>({s, data: []}))));
+
+  packs.forEach((p,i)=>{
+    const card = document.createElement("div"); card.className="mini"; card.style.gridColumn="span 4";
+    const h4 = document.createElement("h4"); h4.textContent = p.s.replace("USDT","/USDT");
+    const cv = document.createElement("canvas");
+    card.appendChild(h4); card.appendChild(cv); grid.appendChild(card);
+    drawMiniLine(cv, p.data, {color: COLOR_POOL[i%COLOR_POOL.length]});
+  });
+}
+
+async function renderTrends(){
+  const windowS = document.getElementById("tr_window")?.value || "30d";
+  const smoothK = +document.getElementById("tr_smooth")?.value || 6;
+  const lbl = document.getElementById("tr_smooth_val"); if (lbl) lbl.textContent = smoothK;
+
+  const grid = document.getElementById("tr_grid");
+  grid.innerHTML = "";
+  const packs = await Promise.all(SYMBOLS.map(s=> fetchTrendsSeries(s, windowS).then(arr=>{
+    const sm = emaSmooth(decimate(arr, 220), smoothK);
+    return {s, data: sm};
+  }).catch(()=>({s, data: []}))));
+
+  packs.forEach((p,i)=>{
+    const card = document.createElement("div"); card.className="mini"; card.style.gridColumn="span 4";
+    const h4 = document.createElement("h4"); h4.textContent = p.s.replace("USDT","/USDT");
+    const cv = document.createElement("canvas");
+    card.appendChild(h4); card.appendChild(cv); grid.appendChild(card);
+    drawMiniLine(cv, p.data, {color: COLOR_POOL[i%COLOR_POOL.length]});
+  });
+}
+
+/* ---------- hooks UI ---------- */
+document.addEventListener("input", (e)=>{
+  if (e.target && (e.target.id==="rt_field" || e.target.id==="rt_window" || e.target.id==="rt_smooth")) renderSentiRT();
+  if (e.target && (e.target.id==="tr_window" || e.target.id==="tr_smooth")) renderTrends();
+});
+
+  function buildOverlaysOnce() {
+    const grid = document.getElementById("overlays_grid");
+    if (grid.dataset.built === "1") return;
+    grid.dataset.built = "1";
+    SYMBOLS.forEach(sym => {
+      const card = document.createElement("div"); card.className = "card"; card.style.gridColumn = "span 6";
+      const title = document.createElement("div"); title.className = "k"; title.textContent = `Overlay Prix & Sentiment — ${sym.replace("USDT","/USDT")}`;
+      const cv = document.createElement("canvas"); cv.className = "chart";
+      OVERLAY_CANVASES.set(sym, cv);
+      card.appendChild(title); card.appendChild(cv); grid.appendChild(card);
+    });
+  }
+
+  
+
+async function renderOverlays() {
+  buildOverlaysOnce();
+
+  for (const sym of SYMBOLS) {
+    const cv = OVERLAY_CANVASES.get(sym);
+    if (!cv) continue;
+
+    try {
+      const [ohlc, senti] = await Promise.all([
+        jget(`${ENDPOINTS.ohlc}?symbol=${sym}&interval=5m&limit=120`).catch(()=>({})),
+        // FIX: demande aussi le champ combiné 'cb'
+        jget(`${ENDPOINTS.senti_series}?symbol=${sym}&window=10h&fields=tw,rd,nw,tr,cb`).catch(()=>({}))
+      ]);
+
+      const rows = (ohlc.data || ohlc || []);
+      const pxSeries = downsampleByStride(
+        rows.map(r => ({ t: +(r.t || r.ts || 0), v: +r.c })), 
+        240
+      );
+
+      const raw = (senti.series || []).map(r => {
+        // FIX: prioriser cb si dispo
+        let v = (r.cb != null ? Number(r.cb) : null);
+        if (v == null) {
+          const parts = [r.tw, r.rd, r.nw]
+            .map(x => (x == null ? null : Number(x)))
+            .filter(x => Number.isFinite(x));
+          if (parts.length) v = parts.reduce((a,b)=>a+b,0) / parts.length;
+        }
+        // FIX: fallback sur 'tr' (0..100 -> [-1,1]) sans laisser de débris syntaxique
+        if (v == null && r.tr != null) v = (Number(r.tr) - 50) / 50; // ~[-1,1]
+
+        return { t: +(r.t || r.ts || 0), v: v };
+      }).filter(p => Number.isFinite(p.v));
+
+      // Optionnel: garder la même fenêtre temporelle que le prix
+      const tmin = pxSeries.length ? pxSeries[0].t : -Infinity;
+      const tmax = pxSeries.length ? pxSeries[pxSeries.length - 1].t : Infinity;
+      const within = raw.filter(p => p.t >= tmin && p.t <= tmax);
+
+      // Ne masque que si "quasi tout zéro"
+      const eps = 1e-9;
+      const allZeroish = within.length > 0 && within.every(p => Math.abs(p.v) < eps);
+
+      const sentiSeries = (!within.length || allZeroish) ? [] : downsampleByStride(within, 240);
+
+      drawOverlay(cv, pxSeries, sentiSeries);
+    } catch (e) {
+      /* no-op */
+    }
+  }
+}
+
+
+
+  /* ===== TRADES, LOGS, NEWS, SIM ===== */
+  async function renderTrades(){
+    const root=EL("table_trades"); root.innerHTML="";
+    const all = await Promise.all(SYMBOLS.map(s=> jget(`${ENDPOINTS.trades}?symbol=${s}&limit=100`).then(js=> (js.trades||js||[]).map(r=>({sym:s,...r}))).catch(()=>[])));
+    const rows = all.flat().sort((a,b)=>(+(b.ts||0))-(+(a.ts||0)));
+    const tbl=document.createElement("table");
+    tbl.innerHTML = `<thead><tr><th>Time</th><th>Symbole</th><th>Side</th><th>Price</th><th>Qty</th><th>Fee</th><th>Type</th><th>Maker</th></tr></thead>
+    <tbody>${rows.map(r=>`<tr>
+      <td class="mono">${new Date((+r.ts)||0).toLocaleString()}</td>
+      <td>${r.sym.replace("USDT","/USDT")}</td>
+      <td style="color:${(r.side||'').toLowerCase()==='buy'?'#20c997':'#ff6b6b'}">${(r.side||'').toUpperCase()}</td>
+      <td class="mono">${fmtNum(r.price)}</td>
+      <td class="mono">${fmtNum(r.qty)}</td>
+      <td class="mono">${fmtNum(r.fee)}</td>
+      <td>${r.order_type||"—"}</td>
+      <td>${r.maker? "yes":"no"}</td>
+    </tr>`).join("")}</tbody>`;
+    root.appendChild(tbl);
+  }
+
+  async function renderLogs(){
+    const root=EL("logs");
+    try{
+      const all = await Promise.all(SYMBOLS.map(s=> jget(`${ENDPOINTS.logs}?symbol=${s}&limit=50`).then(js=>({s, lines:js.lines||[] })).catch(()=>({s,lines:[]}))));
+      const out = all.map(x=> `### ${x.s}\n${x.lines.join("\n")}`).join("\n\n");
+      root.textContent = out || "—";
+    }catch(e){ root.textContent = "—"; }
+  }
+
+  async function renderNews(){
+    const root=EL("news_all"); root.innerHTML="";
+    const all = await Promise.all(SYMBOLS.map(s=> jget(`${ENDPOINTS.news}?symbol=${s}&limit=6`).then(js=>({s,items:js.items||js||[]})).catch(()=>({s,items:[]}))));
+    const wrap=document.createElement("div"); wrap.className="grid"; wrap.style.gridTemplateColumns="repeat(12,1fr)"; wrap.style.gap="12px";
+    all.forEach(({s,items})=>{
+      const col=document.createElement("div"); col.className="card"; col.style.gridColumn="span 6";
+      const title=document.createElement("div"); title.className="k"; title.textContent = `${s.replace("USDT","/USDT")} — Actus`;
+      const body=document.createElement("div"); const ul=document.createElement("ul"); ul.className="sm"; ul.style.margin=0; ul.style.paddingLeft="16px";
+      items.forEach(n=>{
+        const li=document.createElement("li");
+        const a=document.createElement("a"); a.href=n.url; a.target="_blank"; a.rel="noopener"; a.textContent=n.title||n.source||"Lien";
+        const meta=document.createElement("span"); meta.className="sm"; meta.style.marginLeft="6px"; meta.textContent = `(${n.source||"source"})`;
+        li.appendChild(a); li.appendChild(meta); ul.appendChild(li);
+      });
+      body.appendChild(ul); col.appendChild(title); col.appendChild(body); wrap.appendChild(col);
+    });
+    root.appendChild(wrap);
+  }
+
+  function fillSymbolSelects(){
+    ["preset_symbol","manual_symbol","sim_symbol"].forEach(id=>{
+      const sel=EL(id); sel.innerHTML="";
+      SYMBOLS.forEach(s=>{ const o=document.createElement("option"); o.value=s; o.textContent=s.replace("USDT","/USDT"); sel.appendChild(o); });
+    });
+  }
+  async function loadPresets(){
+    const js = await jget(ENDPOINTS.presets_get).catch(()=>({presets:[]}));
+    const presets = js.presets || [];
+    const sel=EL("preset_key"); sel.innerHTML="";
+    presets.forEach(p=>{ const o=document.createElement("option"); o.value=p.key; o.textContent=p.name||p.key; sel.appendChild(o); });
+  }
+
+  EL("preset_apply").addEventListener("click", async ()=>{
+    const sym=EL("preset_symbol").value;
+    const key=EL("preset_key").value;
+    try{ await jpost(ENDPOINTS.presets_set, {preset:key, symbol:sym}); EL("preset_msg").textContent="Preset appliqué."; }
+    catch(e){ EL("preset_msg").textContent=e.message; }
+  });
+  EL("btn_buy").addEventListener("click", async ()=>{
+    const sym=EL("manual_symbol").value; const usdt=+EL("manual_value").value||0;
+    try{ await jpost(ENDPOINTS.manual_buy,{symbol:sym, usdt}); EL("manual_msg").textContent="Achat envoyé."; }
+    catch(e){ EL("manual_msg").textContent=e.message; }
+  });
+  EL("btn_sell").addEventListener("click", async ()=>{
+    const sym=EL("manual_symbol").value; const qty=+EL("manual_value").value||0;
+    try{ await jpost(ENDPOINTS.manual_sell,{symbol:sym, qty}); EL("manual_msg").textContent="Vente envoyée."; }
+    catch(e){ EL("manual_msg").textContent=e.message; }
+  });
+   EL("sim_btn").addEventListener("click", async ()=>{
+  const sym = EL("sim_symbol").value || "BTCUSDT";
+  const usdtStr = EL("sim_usdt").value;
+  const usdt = Number(usdtStr);
+  const tpsl = (EL("sim_tpsl").value || "1.0/0.5").trim();
+
+  if (!Number.isFinite(usdt) || usdt <= 0) {
+    EL("sim_out").textContent = "👉 Saisis un montant USDT > 0 (ex: 100)";
+    return;
+  }
+
+  try {
+    const js = await jpost(ENDPOINTS.sim, { symbol: sym, usdt, tpsl });
+    EL("sim_out").textContent = js.summary || JSON.stringify(js);
+  } catch(e) {
+    EL("sim_out").textContent = "Erreur simulation: " + (e?.message || e);
+  }
+});
+
+ 
+  /* ===== INIT / REFRESH LOOP ===== */
+  async function init(){
+    fillSymbolSelects();
+    EL("sim_tpsl").value = EL("sim_tpsl").value || "1.0/0.5";
+    await loadPresets();
+
+    // tables / tuiles
+    buildPricesTableOnce();
+    buildPositionsTableOnce();
+    buildStatsTableOnce();
+
+    // header & données de base
+    await refreshHeader();
+    await renderPositions();
+    await renderPrices();
+    await renderDecisions();
+    await renderAutotrader();
+    await renderStats();
+
+    // 🆕 panneau Corrélation lisible (Top-N / Petits multiples / Comparaison)
+    fillCorrSelectOnce();            // <-- prépare les sélecteurs & UI du panneau
+    await renderCorrPanel();         // <-- 1er rendu
+
+    // autres graphiques
+    await renderSentiRT();
+    await renderTrends();
+
+    // overlays prix/sentiment
+    buildOverlaysOnce();
+    await renderOverlays();
+
+    // infos diverses
+    await renderTrades();
+    await renderLogs();
+    await renderNews();
+  }
+
+  init().then(() => {
+    // rafraîchis léger
+    schedule(()=>{ refreshHeader(); renderPrices(); }, 10_000);
+
+    // vues liées au portefeuille & décisions
+    schedule(()=>{ renderPositions(); renderDecisions(); renderAutotrader(); renderStats(); }, 30_000);
+
+    // 🆕 corrélation (recalc + lissage)
+    schedule(()=>{ _corrCache = null; renderCorrPanel(); }, 120_000);  // toutes les 2 min
+
+    // autres graphes « lourds »
+    schedule(()=>{ renderSentiRT(); renderTrends(); renderOverlays(); renderTrades(); renderLogs(); renderNews(); }, 90_000);
+  });
+
+  // Re-render au resize (axes recalculés)
+  window.addEventListener('resize', () => {
+    renderCorrPanel(); renderSentiRT(); renderTrends(); renderOverlays();
+  });
+</script>
+
+<!-- === PERF DU JOUR — DOCK BAS === -->
+<footer id="perfDock" class="perf-dock">
+  <div class="perf-dock__bar">
+    <strong>📈 Performance du jour</strong>
+    <div class="perf-dock__actions">
+      <button id="perfResetBase" class="btn-mini" title="Réinitialiser la base d’aujourd’hui">Reset base</button>
+      <button id="perfToggle" class="btn-mini" title="Réduire / Agrandir">▽</button>
+    </div>
+  </div>
+
+  <div class="perf-dock__inner" id="perfDockInner">
+    <div class="kv"><span class="k">Trades (T/B/S)</span><span class="v" id="perf-trades">—</span></div>
+    <div class="kv"><span class="k">PnL jour</span><span class="v">
+      <span id="perf-pnl-usd">—</span> (<span id="perf-pnl-pct">—</span>)
+    </span></div>
+    <div class="kv"><span class="k">Hit-rate</span><span class="v" id="perf-hit">—</span></div>
+    <div class="kv"><span class="k">Max DD</span><span class="v" id="perf-dd">—</span></div>
+    <div class="kv hide-sm"><span class="k">Maj</span><span class="v" id="perf-updated">—</span></div>
+  </div>
+</footer>
+
+</body>
+</html>
