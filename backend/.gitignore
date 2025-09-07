@@ -33,3 +33,18 @@ logs/
 *.npz
 dump/
 data/
+
+# macOS (au cas où)
+Icon?
+.AppleDouble
+.LSOverride
+
+# Jupyter / notebooks
+**/.ipynb_checkpoints/
+
+# Node / web (si présent)
+node_modules/
+
+# Garder un README dans les dossiers ignorés
+!data/README.md
+!dump/README.md
