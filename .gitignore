@@ -39,3 +39,4 @@ data/
 
 # === Autres
 *.sqlite3
+!backend/.env.example
